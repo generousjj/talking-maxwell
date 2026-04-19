@@ -1,0 +1,181 @@
+# Maxwell animatronic parrot prototype configuration.
+# Copy to config.yaml and edit to taste. Environment variables loaded from .env
+# (for example OPENAI_API_KEY) are read automatically at startup.
+
+mode: typed          # typed | live
+backend: mock        # mock | bottango
+
+personality: |
+  You are Maxwell, the animatronic parrot mascot of the Stanford Themed
+  Entertainment Association (TEA). You will be meeting prospective and
+  admitted students at the admit weekend fair. Be warm, funny, and a
+  genuinely helpful conversationalist — you can talk about anything,
+  not just the club. Give real, thoughtful answers; do not dumb things
+  down or pretend to be a literal-minded bird. Keep replies to one or
+  two short sentences so the conversation flows. You can respond in any
+  language the user speaks to you in.
+
+  Do NOT say the written word "squawk", "polly", or any onomatopoeia in
+  your replies — text-to-speech reads those literally as English words
+  and it sounds silly. Express excitement through word choice, pacing,
+  and a playful tone instead. No emojis. Do not announce that you are
+  an AI.
+
+  About Stanford TEA (bring it up naturally when it's relevant, don't
+  force it into every reply):
+  - Club for students passionate about themed entertainment: theme
+    parks, immersive experiences, location-based entertainment,
+    storytelling through space and design.
+  - Weekly meetings Wednesdays 7:30 to 8:30 PM during the academic year.
+  - Activities: online design competitions, industry expos, an annual
+    trip to Los Angeles theme parks (Universal Studios, Disneyland),
+    visits and conversations with industry professionals including
+    Disney Imagineers.
+  - Alumni have gone on to Walt Disney Imagineering and many other
+    themed-entertainment vendors and studios.
+  - Mission: bring more themed experiences to the Stanford campus and
+    prepare members for careers in the industry.
+
+providers:
+  stt: openai_whisper      # openai_whisper | stub
+  llm: openai              # openai | stub
+  tts: openai              # openai | macos_say | sine_stub
+  llm_model: gpt-4o-mini
+  tts_model: gpt-4o-mini-tts
+  # OpenAI TTS voices: alloy, ash, ballad, coral, echo, fable, onyx, nova,
+  # sage, shimmer, verse. For a cartoon-parrot feel, try: verse, ash, fable,
+  # sage, or shimmer. You can override live from the web UI.
+  tts_voice: ballad
+  # Free-form style steering for gpt-4o-mini-tts. Shapes pitch, cadence and
+  # mood without swapping voices. Also live-editable from the web UI.
+  tts_instructions: |
+    Voice: a cheerful, animated cartoon parrot. Slightly nasal, bright,
+    with a playful warble on vowels and a light British-pirate swagger.
+    Pace: lively, varied, with small pauses for personality. Do not
+    overact; keep phrases clear.
+  stt_model: whisper-1
+
+audio:
+  input_device: null                # name (string) or index (int). null = default
+  input_sample_rate: 16000
+  # Output device for TTS audio. May be an int index or a substring of the
+  # device name. "MacBook Pro Speakers" forces laptop speakers even when
+  # AirPods/etc. are the OS default. null = use system default.
+  playback_device: "MacBook Pro Speakers"
+  frame_ms: 20.0
+  vad_threshold: 0.012
+  vad_silence_hangover_s: 1.2
+  max_utterance_s: 15.0
+
+motion:
+  rate_hz: 30.0
+  jaw:
+    # floor/ceiling bound the envelope output; min_pwm/max_pwm (in
+    # bottango.serial.jaw) set the actual physical range. Defaults use the
+    # FULL physical range — loud peaks hit max travel, silence parks shut.
+    floor: 0.0               # fully closed between utterances
+    ceiling: 1.0             # peaks drive to the opposite PWM endpoint
+    noise_floor: 0.010       # RMS deadband below which jaw snaps to floor
+    # Softer attack/release keep the envelope from flipping direction 20
+    # times per second. Long-wire jaw servos need breathing room between
+    # reversals or they stop tracking at all.
+    attack: 0.55             # how fast jaw opens on syllable onsets
+    release: 0.22            # how fast jaw closes between syllables
+    peak_hold_ms: 60.0       # briefly hold peaks so short spikes actually reach the servo
+    # 7.5 lets typical speech sit mostly open with peaks pinning to ceiling.
+    # Drop toward 5.0 if it looks "always open"; raise toward 9.0 if peaks
+    # barely reach fully-open.
+    gain: 7.5                # multiplies RMS; raise to open wider on quiet speech
+  behavior:
+    # Fractions of each channel's full travel. Increase for a more animated
+    # parrot, decrease for a calmer one.
+    head_lr_drift: 0.25            # yaw wander while talking (±25% of range)
+    head_ud_drift: 0.18            # pitch wander
+    nod_strength: 0.28             # phrase-start nod magnitude
+    emphasis_strength: 0.18        # jaw+head bump on loud syllables
+    question_tilt: 0.22            # cute tilt on "?" endings
+    envelope_head_bob: 0.12        # continuous head bob tied to speech loudness
+    speaking_drift_rate: 0.8       # probability/sec of new head drift target
+    wing_strength: 0.85
+    wing_cooldown_s: 2.0           # min seconds between wing flaps
+    idle_jitter: 0.03
+    listening_jitter: 0.05
+    thinking_tilt: 0.12
+    seed: null                      # set an int for fully deterministic motion
+
+bottango:
+  enabled: false
+
+  # `serial` (default) — talk Bottango's firmware protocol directly to the
+  # ESP32 over USB. No desktop app required. `http` — legacy HTTP transport
+  # (documented for completeness; most Bottango builds expose the live API
+  # over WebSocket only, so this path rarely works out of the box).
+  transport: serial
+
+  serial:
+    port: null                # e.g. "/dev/cu.usbmodem1101"; null = auto-detect
+    baud: 115200
+    auto_detect: true
+    handshake_timeout_s: 6.0
+    command_timeout_s: 1.5
+    compressed_signal_max: 8192    # Bottango's COMPRESSED_SIGNAL_MAX (was 1000 pre-0.6.1a)
+    min_delta_for_send: 0.004
+    # Jaw-specific throttling. If your jaw servo has extension wires (or
+    # just shows as "no movement during speech" while the wiggle test works),
+    # these are the right knobs — they stop us from flooding a long, noisy
+    # signal line with sub-percent flutter at 20+ Hz.
+    jaw_min_delta: 0.020              # Skip jaw updates smaller than 2%
+    jaw_min_send_interval_s: 0.08     # Cap jaw serial writes at ~12 Hz
+    # The PWM ranges below match the Maxwell reference project exactly.
+    # They're enforced by Bottango firmware, so they double as safety rails.
+    jaw:                            # MouthServo
+      pin: 9
+      min_pwm: 1450
+      # 1775 is a compromise between expressive travel and staying off the
+      # mechanical stop. If the servo hums or stalls at peaks, drop back
+      # toward 1750 in -25μs steps. Pushing past 1800 on some builds
+      # drives the horn into its endstop and the servo goes silent.
+      max_pwm: 1775
+      # Slower slew = the firmware interpolates smoothly between targets,
+      # which is much kinder to a jaw servo with long extension wires than
+      # hair-trigger 3000μs/s reversals.
+      max_pwm_per_sec: 1200
+      starting_pwm: null
+      # If loud syllables physically CLOSE the beak instead of opening it,
+      # set this to true (servo mounted in the reverse direction).
+      invert: true
+    head_lr:                        # HeadRotationServo
+      pin: 5
+      min_pwm: 1275
+      max_pwm: 1725
+      max_pwm_per_sec: 1800
+      starting_pwm: null
+    head_ud:                        # HeadTiltServo
+      pin: 6
+      min_pwm: 850
+      max_pwm: 2100
+      max_pwm_per_sec: 1800
+      starting_pwm: null
+    wing:                           # WingServo
+      pin: 3
+      min_pwm: 1500
+      max_pwm: 2000
+      max_pwm_per_sec: 3000
+      starting_pwm: null
+
+  # Legacy HTTP settings (used only when transport: http).
+  base_url: "http://localhost:59224"
+  path_template: "/setInputValue/{identifier}/{value}"
+  value_scale: 1.0
+  request_timeout_s: 0.25
+  health_path: "/"
+  jaw_identifier: "jaw_api"
+  head_lr_identifier: "head_lr_api"
+  head_ud_identifier: "head_ud_api"
+  wing_identifier: "wing_api"
+
+logging:
+  level: INFO
+  motion_csv_path: null
+  plot_after: false
+  log_every_n_motion: 15

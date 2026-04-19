@@ -1,0 +1,23 @@
+# Core runtime
+numpy>=1.26,<3
+PyYAML>=6.0,<7
+python-dotenv>=1.0,<2
+
+# Audio I/O (optional at import time but needed for mic/playback)
+sounddevice>=0.4,<1
+soundfile>=0.12,<1
+
+# Providers
+openai>=1.40,<2
+
+# Bottango serial transport (primary hardware path)
+pyserial>=3.5,<4
+
+# Bottango HTTP transport (legacy / optional)
+aiohttp>=3.9,<4
+
+# Debugging / inspection (optional)
+matplotlib>=3.8,<4
+
+# Tests
+pytest>=8,<9
