@@ -964,6 +964,28 @@ ADMITS_HTML = """<!doctype html>
     text-align: center;
     min-height: 1.4em;
   }
+  #stopBtn {
+    display: none;
+    background: white;
+    color: var(--maxwell-purple-2);
+    border: 2px solid var(--maxwell-purple);
+    border-radius: 999px;
+    padding: .55rem 1.4rem;
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 700;
+    font-size: 1rem;
+    cursor: pointer;
+    box-shadow: 0 4px 10px rgba(94,66,153,.18);
+    transition: transform .08s, background .15s, color .15s;
+  }
+  #stopBtn:hover {
+    background: var(--maxwell-purple);
+    color: white;
+  }
+  #stopBtn:active {
+    transform: translateY(2px);
+  }
+  #stopBtn.visible { display: inline-block; }
 
   #status {
     text-align: center;
@@ -1069,6 +1091,7 @@ ADMITS_HTML = """<!doctype html>
   <div class="talk-wrap">
     <button id="talkBtn" disabled>Connecting…</button>
     <div id="talkHint"></div>
+    <button id="stopBtn" type="button">Stop</button>
     <div id="status">Loading…</div>
   </div>
 </section>
@@ -1132,6 +1155,7 @@ function setActive(group, dataAttr, value) {
 function refreshTalkButton() {
   const btn = $('talkBtn');
   const hint = $('talkHint');
+  const stopBtn = $('stopBtn');
   if (mode === 'realtime') {
     if (micMode === 'ptt') {
       btn.textContent = rtRunning ? 'Hold to speak' : 'Start';
@@ -1140,18 +1164,20 @@ function refreshTalkButton() {
         ? 'Hold the button (or spacebar) while you talk.'
         : 'Tap once to wake Maxwell up.';
     } else {
-      btn.textContent = rtRunning ? 'Stop' : 'Wake Maxwell';
+      btn.textContent = rtRunning ? 'Listening…' : 'Wake Maxwell';
       btn.disabled = false;
       hint.textContent = rtRunning
-        ? 'Just talk! He listens and replies live.'
+        ? 'Talk anytime — he\\'ll hear you and reply live.'
         : 'Tap to start a live conversation.';
     }
+    stopBtn.classList.toggle('visible', rtRunning);
   } else {
     btn.textContent = convBusy ? 'Listening…' : 'Tap & talk';
     btn.disabled = convBusy;
     hint.textContent = convBusy
       ? 'Speak now, then pause.'
       : 'Tap, speak one thing, pause, and Maxwell will reply.';
+    stopBtn.classList.remove('visible');
   }
 }
 
@@ -1245,7 +1271,10 @@ $('talkBtn').addEventListener('click', async (e) => {
   // Click semantics depend on mode
   if (mode === 'realtime') {
     if (micMode === 'auto') {
-      if (!rtRunning) await startRealtime(); else await stopRealtime();
+      if (!rtRunning) await startRealtime();
+      // While running in auto-listen, the big button is just a status
+      // chip ("Listening…"). The user stops the session via the
+      // dedicated Stop pill below.
     } else if (!rtRunning) {
       await startRealtime();
     }
@@ -1269,6 +1298,14 @@ $('talkBtn').addEventListener('click', async (e) => {
     convBusy = false;
     refreshTalkButton();
   }
+});
+
+// Stop pill — visible whenever realtime is running in either mic mode.
+$('stopBtn').addEventListener('click', async () => {
+  if (!rtRunning) return;
+  // If PTT is held when stop is clicked, release it cleanly first.
+  if (ptt) await pttUp();
+  await stopRealtime();
 });
 
 // Spacebar = PTT in realtime+ptt
