@@ -1230,45 +1230,55 @@ async function stopRealtime() {
   refreshTalkButton();
 }
 
-// PTT
+// PTT — set ptt=true synchronously on press so a fast press+release
+// can't slip through the await on startRealtime() and leave the mic
+// stuck open. pttUp waits for any in-flight pttDown to finish so the
+// "down" PTT signal is always delivered to the server before "up".
 let ptt = false;
+let pttDownPromise = null;
 async function pttDown() {
   if (mode !== 'realtime' || micMode !== 'ptt' || ptt) return;
-  if (!rtRunning) { await startRealtime(); }
-  if (!rtRunning) return;
   ptt = true;
   $('talkBtn').classList.add('held');
   setStatus('Listening…', 'live');
-  await api('/api/realtime/ptt', {action: 'down'});
+  pttDownPromise = (async () => {
+    if (!rtRunning) await startRealtime();
+    if (!rtRunning) {
+      ptt = false;
+      $('talkBtn').classList.remove('held');
+      return;
+    }
+    await api('/api/realtime/ptt', {action: 'down'});
+  })();
+  try { await pttDownPromise; } finally { pttDownPromise = null; }
 }
 async function pttUp() {
   if (!ptt) return;
   ptt = false;
   $('talkBtn').classList.remove('held');
   setStatus('Maxwell is thinking…', 'busy');
+  if (pttDownPromise) {
+    try { await pttDownPromise; } catch (e) {}
+  }
   await api('/api/realtime/ptt', {action: 'up'});
 }
 
-// Talk button click handling
+// Talk button press/release. pttDown auto-starts the session if it
+// isn't running yet, so the user can do "tap to wake + hold to talk"
+// in one motion. Window-level release listeners catch pointerup /
+// touchend that fired off the button (so PTT never gets stuck open
+// when the cursor or finger slides away mid-press).
 $('talkBtn').addEventListener('mousedown', e => {
-  if (mode === 'realtime' && micMode === 'ptt' && rtRunning) pttDown();
-});
-$('talkBtn').addEventListener('mouseup', e => {
-  if (mode === 'realtime' && micMode === 'ptt') pttUp();
-});
-$('talkBtn').addEventListener('mouseleave', e => {
-  if (ptt) pttUp();
+  if (mode === 'realtime' && micMode === 'ptt') { e.preventDefault(); pttDown(); }
 });
 $('talkBtn').addEventListener('touchstart', e => {
-  if (mode === 'realtime' && micMode === 'ptt' && rtRunning) {
+  if (mode === 'realtime' && micMode === 'ptt') {
     e.preventDefault(); pttDown();
   }
 }, {passive:false});
-$('talkBtn').addEventListener('touchend', e => {
-  if (mode === 'realtime' && micMode === 'ptt') {
-    e.preventDefault(); pttUp();
-  }
-}, {passive:false});
+window.addEventListener('mouseup', () => { if (ptt) pttUp(); });
+window.addEventListener('touchend', () => { if (ptt) pttUp(); });
+window.addEventListener('touchcancel', () => { if (ptt) pttUp(); });
 
 $('talkBtn').addEventListener('click', async (e) => {
   // Click semantics depend on mode

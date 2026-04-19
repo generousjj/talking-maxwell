@@ -279,6 +279,16 @@ class RealtimeSession:
     # fallback). Keyed nothing — there's only one assistant response in
     # flight at a time on the realtime endpoint.
     _assistant_transcript_buf: str = field(default="", init=False)
+    # Conversation-log ordering: the server often emits the assistant
+    # audio transcript (Maxwell's reply) before
+    # conversation.item.input_audio_transcription.completed for the
+    # *user's* turn that triggered it. Holding the assistant line until
+    # we either see the user transcript or hit a small timeout keeps
+    # the UI ordered as "you -> Maxwell".
+    _pending_assistant_text: str = field(default="", init=False)
+    _awaiting_user_transcript: bool = field(default=False, init=False)
+    _assistant_flush_task: Optional[asyncio.Task] = field(default=None, init=False)
+    _assistant_flush_grace_s: float = 2.5
 
     # Push-to-talk runtime state. ``_ptt_active`` gates the mic pump
     # when ``push_to_talk`` is on. ``_ptt_uploaded_chunks`` tracks
@@ -903,8 +913,16 @@ class RealtimeSession:
                     if self._mic_muted:
                         continue
                     log.info("realtime: user speech stopped -> thinking")
+                    # The user just finished an utterance; expect
+                    # input_audio_transcription.completed for it before
+                    # we surface Maxwell's reply.
+                    self._awaiting_user_transcript = True
                     await self._emit_state("thinking")
                 elif etype == EVENT_RESPONSE_CREATED:
+                    # Same gate as speech_stopped: handles the PTT path
+                    # where the server may not synthesize speech_stopped
+                    # but always emits response.created at turn start.
+                    self._awaiting_user_transcript = True
                     await self._emit_state("thinking")
                 elif etype == EVENT_ASSISTANT_TRANSCRIPT_DELTA:
                     delta = _event_attr(event, "delta") or ""
@@ -916,14 +934,8 @@ class RealtimeSession:
                         or self._assistant_transcript_buf
                     ).strip()
                     self._assistant_transcript_buf = ""
-                    if final and self.transcript_callback is not None:
-                        try:
-                            self.transcript_callback("maxwell", final)
-                        except Exception:  # noqa: BLE001
-                            log.debug(
-                                "realtime: transcript callback (maxwell) failed",
-                                exc_info=True,
-                            )
+                    if final:
+                        await self._deliver_assistant_transcript(final)
                 elif etype == EVENT_USER_TRANSCRIPT:
                     text = (_event_attr(event, "transcript") or "").strip()
                     if text and self.transcript_callback is not None:
@@ -934,6 +946,10 @@ class RealtimeSession:
                                 "realtime: transcript callback (user) failed",
                                 exc_info=True,
                             )
+                    self._awaiting_user_transcript = False
+                    # Now that the user line is on the wire, flush any
+                    # assistant reply that arrived first.
+                    await self._flush_pending_assistant()
                 elif etype == EVENT_ERROR:
                     err = getattr(event, "error", None) or (
                         event.get("error") if isinstance(event, dict) else None
@@ -1013,3 +1029,57 @@ class RealtimeSession:
             await self.state_callback(name)
         except Exception:  # noqa: BLE001
             log.exception("realtime: state callback raised")
+
+    async def _deliver_assistant_transcript(self, text: str) -> None:
+        """Emit Maxwell's transcript or hold it briefly if we're still
+        waiting on the user's transcript for the same turn.
+        """
+        if self.transcript_callback is None:
+            return
+        if not self._awaiting_user_transcript:
+            self._safe_transcript("maxwell", text)
+            return
+        # Buffer + start a grace timer so we don't hold forever if the
+        # user transcription event never comes (e.g. server-side ASR is
+        # disabled or fails).
+        self._pending_assistant_text = text
+        if self._assistant_flush_task is not None:
+            self._assistant_flush_task.cancel()
+
+        async def _grace() -> None:
+            try:
+                await asyncio.sleep(self._assistant_flush_grace_s)
+            except asyncio.CancelledError:
+                return
+            if self._pending_assistant_text:
+                log.debug(
+                    "realtime: user transcript didn't arrive in %.1fs, "
+                    "flushing held assistant line",
+                    self._assistant_flush_grace_s,
+                )
+                self._awaiting_user_transcript = False
+                await self._flush_pending_assistant()
+
+        self._assistant_flush_task = asyncio.create_task(
+            _grace(), name="rt-assistant-flush"
+        )
+
+    async def _flush_pending_assistant(self) -> None:
+        text = self._pending_assistant_text
+        if not text:
+            return
+        self._pending_assistant_text = ""
+        if self._assistant_flush_task is not None:
+            self._assistant_flush_task.cancel()
+            self._assistant_flush_task = None
+        self._safe_transcript("maxwell", text)
+
+    def _safe_transcript(self, role: str, text: str) -> None:
+        if self.transcript_callback is None:
+            return
+        try:
+            self.transcript_callback(role, text)
+        except Exception:  # noqa: BLE001
+            log.debug(
+                "realtime: transcript callback (%s) failed", role, exc_info=True
+            )
