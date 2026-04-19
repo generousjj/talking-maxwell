@@ -65,21 +65,36 @@ class LiveSpeakingContext:
         self.question_like = analysis["question_like"]
         self.excited = analysis["excited"]
         self.envelope_follower.reset()
+        self._behavior_smoothed = 0.0
+        self._latest_envelope = 0.0
         self.phrase_boundary = True  # phrase-start nod
 
     def update_from_audio(self, progress: float, rms: float) -> None:
         self.progress = progress
         self.rms = rms
-        jaw = self.envelope_follower.process_rms(rms)
-        # jaw mapped to [floor..ceiling]; derive a 0..1 "envelope" for the
-        # behavior engine so it can blend with other motion cleanly.
-        floor = self.envelope_follower.calibration.floor
-        ceil = self.envelope_follower.calibration.ceiling
-        if ceil - floor > 1e-6:
-            self._latest_envelope = max(0.0, min(1.0, (jaw - floor) / (ceil - floor)))
+        # Jaw output uses the user-tuned calibration (gain, floor,
+        # ceiling) so the physical mouth opening matches the bird.
+        self.envelope_follower.process_rms(rms)
+        # Behavior envelope drives wing flaps, head bobs and emphasis
+        # in BehaviorEngine._speaking. It MUST be independent of the
+        # jaw calibration, because the jaw is intentionally set to a
+        # low gain (1.6) to match the physical servo — that low gain
+        # would otherwise keep the behavior envelope below the wing /
+        # bob thresholds, leaving Maxwell almost still while talking.
+        # Use a fixed strong gain (tuned to land in 0.4-1.0 for normal
+        # conversational TTS) and the same attack/release smoothing so
+        # the value tracks syllables instead of jerking per sample.
+        cal = self.envelope_follower.calibration
+        target = min(1.0, max(0.0, rms) * 6.0)
+        prev = getattr(self, "_behavior_smoothed", 0.0)
+        if target > prev:
+            coeff = max(0.0, min(1.0, cal.attack))
         else:
-            self._latest_envelope = jaw
-        # Mark emphasis when RMS spikes significantly.
+            coeff = max(0.0, min(1.0, cal.release))
+        self._behavior_smoothed = prev + coeff * (target - prev)
+        self._latest_envelope = self._behavior_smoothed
+        # Emphasis: brief instantaneous spike on loud syllables. Same
+        # rms*4 mapping as before, independent of the smoothed envelope.
         self.emphasis = min(1.0, rms * 4.0)
 
     def snapshot(self, now: float) -> SpeakingContext:
