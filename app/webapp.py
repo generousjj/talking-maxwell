@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import time
 from collections import deque
@@ -95,7 +96,22 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Maxwell</h1>
-<div class="sub">Laptop parrot bot • <span id="backend"></span></div>
+<div class="sub">Laptop parrot bot • <span id="backend"></span> • <a href="/admits" style="color:#8b5cf6;text-decoration:none;font-weight:600;">Open admits view ↗</a></div>
+
+<section>
+  <h2>Connection</h2>
+  <div class="row" style="align-items:center;">
+    <button id="connect" class="primary">Connect</button>
+    <button id="endSession" class="stop">End session</button>
+    <span id="connStatus" class="status" style="padding:.25rem .6rem;">checking...</span>
+  </div>
+  <div class="sub" style="font-size:.85rem;margin-top:-.4rem;">
+    "Connect" opens the serial port + builds the pipeline (auto-runs on
+    boot). "End session" stops realtime mode if active, centers all
+    servos, then closes the serial port so you can safely unplug
+    Maxwell or hand him off.
+  </div>
+</section>
 
 <section>
   <h2>Speak</h2>
@@ -122,6 +138,110 @@ INDEX_HTML = """<!doctype html>
     transcribes, replies, and speaks back. "Keep conversing" auto-restarts
     listening after each reply.
   </div>
+  <hr style="margin:.75rem 0;border:none;border-top:1px solid #eee;"/>
+  <div class="row" style="align-items:center;">
+    <button id="rtToggle">Start realtime mode</button>
+    <span id="rtStatus" class="status" style="padding:.25rem .6rem;">off</span>
+    <label style="display:flex;align-items:center;gap:.35rem;font-size:.9rem;margin-left:.5rem;">
+      <input type="checkbox" id="rtPtt"/> Push-to-talk (hold space)
+    </label>
+    <button id="rtPttBtn" disabled style="padding:.35rem .8rem;font-size:.85rem;border-radius:6px;border:1px solid #8b5cf6;background:#f3f0ff;color:#5b3eb5;cursor:pointer;">
+      Hold to talk
+    </button>
+    <label for="rtVoice" style="font-size:.85rem;margin-left:.5rem;">Realtime voice</label>
+    <select id="rtVoice" style="padding:.4rem;font-size:.95rem;border-radius:6px;border:1px solid #8883;">
+      <option value="ballad">ballad — melodic (default)</option>
+      <option value="marin">marin — warm, conversational</option>
+      <option value="cedar">cedar — deeper, grounded</option>
+      <option value="alloy">alloy — neutral</option>
+      <option value="ash">ash — characterful, raspy</option>
+      <option value="coral">coral — friendly</option>
+      <option value="echo">echo — calm</option>
+      <option value="sage">sage — bright</option>
+      <option value="shimmer">shimmer — airy</option>
+      <option value="verse">verse — expressive, lively</option>
+    </select>
+  </div>
+  <div class="sub" style="font-size:.85rem;margin-top:.25rem;">
+    Realtime mode opens a continuous OpenAI speech-to-speech session.
+    Just talk — Maxwell listens, replies, and can interrupt himself if
+    you start talking again. Lower latency than the turn-based path.
+    Voice changes apply on the next response (the session is restarted
+    automatically if it's already running).
+  </div>
+  <details style="margin-top:.5rem;">
+    <summary style="cursor:pointer;font-size:.85rem;color:#444;">
+      Mic sensitivity (use these if Maxwell triggers on background noise)
+    </summary>
+    <div style="margin-top:.5rem;display:grid;grid-template-columns:160px 1fr 70px;gap:.4rem .6rem;align-items:center;">
+      <label for="rtNoise" style="font-size:.85rem;">Noise reduction</label>
+      <select id="rtNoise" style="padding:.35rem;font-size:.9rem;border-radius:6px;border:1px solid #8883;grid-column:2/4;">
+        <option value="far_field">far_field — laptop mic in noisy room (recommended)</option>
+        <option value="near_field">near_field — headset / AirPods</option>
+        <option value="off">off — raw mic</option>
+      </select>
+      <label for="rtVadType" style="font-size:.85rem;">Turn detection</label>
+      <select id="rtVadType" style="padding:.35rem;font-size:.9rem;border-radius:6px;border:1px solid #8883;grid-column:2/4;">
+        <option value="server_vad">server_vad — silence based (predictable)</option>
+        <option value="semantic_vad">semantic_vad — content aware (less interruption)</option>
+      </select>
+      <label for="rtThreshold" style="font-size:.85rem;">VAD threshold</label>
+      <input id="rtThreshold" type="range" min="0" max="1" step="0.05" />
+      <span id="rtThresholdVal" class="sub" style="text-align:right;">0.70</span>
+      <label for="rtSilence" style="font-size:.85rem;">Silence to end turn (ms)</label>
+      <input id="rtSilence" type="range" min="200" max="2000" step="50" />
+      <span id="rtSilenceVal" class="sub" style="text-align:right;">700</span>
+      <label for="rtPrefix" style="font-size:.85rem;">Prefix padding (ms)</label>
+      <input id="rtPrefix" type="range" min="0" max="1000" step="50" />
+      <span id="rtPrefixVal" class="sub" style="text-align:right;">300</span>
+      <label for="rtEager" style="font-size:.85rem;">Semantic eagerness</label>
+      <select id="rtEager" style="padding:.35rem;font-size:.9rem;border-radius:6px;border:1px solid #8883;grid-column:2/4;">
+        <option value="low">low — let user take their time</option>
+        <option value="medium">medium</option>
+        <option value="high">high — chunk fast</option>
+        <option value="auto">auto</option>
+      </select>
+      <label for="rtHalfDuplex" style="font-size:.85rem;">Echo guard (half-duplex)</label>
+      <div style="grid-column:2/4;display:flex;align-items:center;gap:.6rem;">
+        <input id="rtHalfDuplex" type="checkbox" />
+        <span class="sub" style="font-size:.8rem;">Mute mic while Maxwell is speaking (prevents him from hearing himself)</span>
+      </div>
+      <label for="rtTail" style="font-size:.85rem;">Playback tail (ms)</label>
+      <input id="rtTail" type="range" min="0" max="1500" step="50" />
+      <span id="rtTailVal" class="sub" style="text-align:right;">400</span>
+      <label for="rtBargeIn" style="font-size:.85rem;">Allow interruption</label>
+      <div style="grid-column:2/4;display:flex;align-items:center;gap:.6rem;">
+        <input id="rtBargeIn" type="checkbox" />
+        <span class="sub" style="font-size:.8rem;">Talk loudly over Maxwell to cut him off mid-sentence</span>
+      </div>
+      <label for="rtBargeRms" style="font-size:.85rem;">Barge-in loudness</label>
+      <input id="rtBargeRms" type="range" min="0.01" max="0.20" step="0.01" />
+      <span id="rtBargeRmsVal" class="sub" style="text-align:right;">0.06</span>
+      <label for="rtBargeFactor" style="font-size:.85rem;">Above-ambient factor</label>
+      <input id="rtBargeFactor" type="range" min="1.5" max="10" step="0.5" />
+      <span id="rtBargeFactorVal" class="sub" style="text-align:right;">5.0</span>
+      <label for="rtBargeFrames" style="font-size:.85rem;">Min frames (40ms each)</label>
+      <input id="rtBargeFrames" type="range" min="1" max="20" step="1" />
+      <span id="rtBargeFramesVal" class="sub" style="text-align:right;">4</span>
+    </div>
+    <div class="sub" style="font-size:.8rem;margin-top:.4rem;">
+      Higher threshold + longer silence = less likely to mistake background
+      noise for speech. Far-field noise reduction is server-side and adds
+      a tiny bit of latency. Semantic VAD ignores the threshold/silence
+      sliders and uses content classification instead. Echo guard is the
+      fix for "Maxwell keeps hearing himself" — leave it on unless you're
+      using a headset / AirPods and want barge-in. Tail = how long after
+      his last syllable we wait before re-opening the mic; bump it up if
+      your speakers are loud or the room is reverberant. <b>Allow
+      interruption</b> brings barge-in back even with echo guard on:
+      while Maxwell speaks his mic is muted, but if you talk noticeably
+      louder than the speaker leakage for ~150 ms the mic re-opens and
+      he stops mid-sentence. Raise loudness threshold or above-ambient
+      factor if false interrupts happen; lower min-frames if it feels
+      sluggish. Changes apply immediately (session is restarted if
+      active).
+    </div>
+  </details>
   <div id="convStatus" class="status" style="margin:.5rem 0;">idle</div>
   <div id="convLog" style="display:flex;flex-direction:column;gap:.35rem;
     max-height:18rem;overflow:auto;padding:.25rem 0;"></div>
@@ -288,6 +408,47 @@ async function loadConfig() {
   if (cfg.instructions != null) $('instructions').value = cfg.instructions;
   if (cfg.personality != null) $('personality').value = cfg.personality;
   $('prewarm').checked = !!cfg.prewarm_jaw;
+  if (cfg.realtime && cfg.realtime.voice) {
+    $('rtVoice').value = cfg.realtime.voice;
+  }
+  if (cfg.realtime) {
+    if (cfg.realtime.noise_reduction) $('rtNoise').value = cfg.realtime.noise_reduction;
+    if (cfg.realtime.vad_type) $('rtVadType').value = cfg.realtime.vad_type;
+    if (cfg.realtime.vad_threshold != null) {
+      $('rtThreshold').value = cfg.realtime.vad_threshold;
+      $('rtThresholdVal').textContent = (+cfg.realtime.vad_threshold).toFixed(2);
+    }
+    if (cfg.realtime.vad_silence_duration_ms != null) {
+      $('rtSilence').value = cfg.realtime.vad_silence_duration_ms;
+      $('rtSilenceVal').textContent = cfg.realtime.vad_silence_duration_ms;
+    }
+    if (cfg.realtime.vad_prefix_padding_ms != null) {
+      $('rtPrefix').value = cfg.realtime.vad_prefix_padding_ms;
+      $('rtPrefixVal').textContent = cfg.realtime.vad_prefix_padding_ms;
+    }
+    if (cfg.realtime.vad_eagerness) $('rtEager').value = cfg.realtime.vad_eagerness;
+    if (cfg.realtime.half_duplex != null) $('rtHalfDuplex').checked = !!cfg.realtime.half_duplex;
+    if (cfg.realtime.playback_tail_ms != null) {
+      $('rtTail').value = cfg.realtime.playback_tail_ms;
+      $('rtTailVal').textContent = cfg.realtime.playback_tail_ms;
+    }
+    if (cfg.realtime.barge_in_enabled != null) $('rtBargeIn').checked = !!cfg.realtime.barge_in_enabled;
+    if (cfg.realtime.barge_in_rms_threshold != null) {
+      $('rtBargeRms').value = cfg.realtime.barge_in_rms_threshold;
+      $('rtBargeRmsVal').textContent = (+cfg.realtime.barge_in_rms_threshold).toFixed(2);
+    }
+    if (cfg.realtime.barge_in_above_ambient_factor != null) {
+      $('rtBargeFactor').value = cfg.realtime.barge_in_above_ambient_factor;
+      $('rtBargeFactorVal').textContent = (+cfg.realtime.barge_in_above_ambient_factor).toFixed(1);
+    }
+    if (cfg.realtime.barge_in_min_frames != null) {
+      $('rtBargeFrames').value = cfg.realtime.barge_in_min_frames;
+      $('rtBargeFramesVal').textContent = cfg.realtime.barge_in_min_frames;
+    }
+    if (cfg.realtime.push_to_talk != null) {
+      $('rtPtt').checked = !!cfg.realtime.push_to_talk;
+    }
+  }
 }
 loadConfig();
 
@@ -477,6 +638,687 @@ $('talk').onclick = async () => {
     await runOneTurn();
   }
 };
+
+let rtRunning = false;
+function setRtUi(running) {
+  rtRunning = running;
+  $('rtToggle').textContent = running ? 'Stop realtime mode' : 'Start realtime mode';
+  $('rtStatus').textContent = running ? 'live' : 'off';
+  $('rtStatus').className = 'status ' + (running ? 'ok' : '');
+  // PTT button only meaningful while realtime is live AND PTT mode is on.
+  const pttEnabled = $('rtPtt') && $('rtPtt').checked;
+  if ($('rtPttBtn')) {
+    $('rtPttBtn').disabled = !running || !pttEnabled;
+    $('rtPttBtn').style.opacity = ($('rtPttBtn').disabled) ? '0.5' : '1';
+  }
+}
+async function refreshRtStatus() {
+  try {
+    const r = await api('/api/realtime/status');
+    setRtUi(!!r.running);
+  } catch (e) {}
+}
+$('rtVoice').onchange = async () => {
+  const r = await api('/api/realtime/config', {voice: $('rtVoice').value});
+  if (r.ok && r.running) {
+    $('rtStatus').textContent = 'restarting...';
+  }
+};
+async function pushRtConfig(patch) {
+  const r = await api('/api/realtime/config', patch);
+  if (r.ok && r.running) {
+    $('rtStatus').textContent = 'restarting...';
+  }
+}
+$('rtNoise').onchange = () => pushRtConfig({noise_reduction: $('rtNoise').value});
+$('rtVadType').onchange = () => pushRtConfig({vad_type: $('rtVadType').value});
+$('rtEager').onchange = () => pushRtConfig({vad_eagerness: $('rtEager').value});
+$('rtThreshold').oninput = () => $('rtThresholdVal').textContent = (+$('rtThreshold').value).toFixed(2);
+$('rtThreshold').onchange = () => pushRtConfig({vad_threshold: +$('rtThreshold').value});
+$('rtSilence').oninput = () => $('rtSilenceVal').textContent = $('rtSilence').value;
+$('rtSilence').onchange = () => pushRtConfig({vad_silence_duration_ms: +$('rtSilence').value});
+$('rtPrefix').oninput = () => $('rtPrefixVal').textContent = $('rtPrefix').value;
+$('rtPrefix').onchange = () => pushRtConfig({vad_prefix_padding_ms: +$('rtPrefix').value});
+$('rtHalfDuplex').onchange = () => pushRtConfig({half_duplex: $('rtHalfDuplex').checked});
+$('rtTail').oninput = () => $('rtTailVal').textContent = $('rtTail').value;
+$('rtTail').onchange = () => pushRtConfig({playback_tail_ms: +$('rtTail').value});
+$('rtBargeIn').onchange = () => pushRtConfig({barge_in_enabled: $('rtBargeIn').checked});
+$('rtBargeRms').oninput = () => $('rtBargeRmsVal').textContent = (+$('rtBargeRms').value).toFixed(2);
+$('rtBargeRms').onchange = () => pushRtConfig({barge_in_rms_threshold: +$('rtBargeRms').value});
+$('rtBargeFactor').oninput = () => $('rtBargeFactorVal').textContent = (+$('rtBargeFactor').value).toFixed(1);
+$('rtBargeFactor').onchange = () => pushRtConfig({barge_in_above_ambient_factor: +$('rtBargeFactor').value});
+$('rtBargeFrames').oninput = () => $('rtBargeFramesVal').textContent = $('rtBargeFrames').value;
+$('rtBargeFrames').onchange = () => pushRtConfig({barge_in_min_frames: +$('rtBargeFrames').value});
+$('rtToggle').onclick = async () => {
+  $('rtToggle').disabled = true;
+  try {
+    if (!rtRunning) {
+      $('rtStatus').textContent = 'connecting...';
+      const r = await api('/api/realtime/start', {});
+      if (!r.ok) {
+        $('rtStatus').textContent = 'error: ' + r.error;
+        $('rtStatus').className = 'status err';
+      } else {
+        setRtUi(true);
+      }
+    } else {
+      const r = await api('/api/realtime/stop', {});
+      setRtUi(!!r.running);
+    }
+  } finally {
+    $('rtToggle').disabled = false;
+  }
+};
+refreshRtStatus();
+setInterval(refreshRtStatus, 3000);
+
+// ---- Connection (top of page) ----
+let connected = null;
+function setConnUi(c) {
+  connected = c;
+  const el = $('connStatus');
+  el.textContent = c ? 'connected' : 'disconnected';
+  el.className = 'status ' + (c ? 'ok' : 'err');
+  $('connect').disabled = !!c;
+  $('endSession').disabled = !c;
+}
+async function refreshConnStatus() {
+  try {
+    const r = await api('/api/connection/status');
+    if (r.ok) setConnUi(!!r.connected);
+  } catch (e) {}
+}
+$('connect').onclick = async () => {
+  $('connect').disabled = true;
+  $('connStatus').textContent = 'connecting...';
+  const r = await api('/api/connect', {});
+  if (r.ok) setConnUi(true); else { $('connStatus').textContent = 'error: ' + r.error; }
+};
+$('endSession').onclick = async () => {
+  $('endSession').disabled = true;
+  $('connStatus').textContent = 'centering + closing...';
+  const r = await api('/api/disconnect', {});
+  if (r.ok) setConnUi(false); else { $('connStatus').textContent = 'error: ' + r.error; }
+};
+refreshConnStatus();
+setInterval(refreshConnStatus, 5000);
+
+// ---- Push-to-talk ----
+function setPttUi(enabled) {
+  $('rtPtt').checked = enabled;
+  $('rtPttBtn').disabled = !enabled || !rtRunning;
+  $('rtPttBtn').style.opacity = ($('rtPttBtn').disabled) ? '0.5' : '1';
+}
+$('rtPtt').onchange = async () => {
+  const enabled = $('rtPtt').checked;
+  await pushRtConfig({push_to_talk: enabled});
+  setPttUi(enabled);
+};
+async function pttDown() {
+  if (!$('rtPtt').checked || !rtRunning) return;
+  $('rtPttBtn').textContent = 'Listening...';
+  $('rtPttBtn').style.background = '#fde68a';
+  await api('/api/realtime/ptt', {action: 'down'});
+}
+async function pttUp() {
+  if (!$('rtPtt').checked || !rtRunning) return;
+  $('rtPttBtn').textContent = 'Hold to talk';
+  $('rtPttBtn').style.background = '#f3f0ff';
+  await api('/api/realtime/ptt', {action: 'up'});
+}
+$('rtPttBtn').addEventListener('mousedown', pttDown);
+$('rtPttBtn').addEventListener('mouseup', pttUp);
+$('rtPttBtn').addEventListener('mouseleave', pttUp);
+$('rtPttBtn').addEventListener('touchstart', e => { e.preventDefault(); pttDown(); });
+$('rtPttBtn').addEventListener('touchend', e => { e.preventDefault(); pttUp(); });
+let spaceHeld = false;
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space' && !e.repeat && !spaceHeld) {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+    if (!$('rtPtt').checked || !rtRunning) return;
+    e.preventDefault(); spaceHeld = true; pttDown();
+  }
+});
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space' && spaceHeld) {
+    spaceHeld = false; pttUp();
+  }
+});
+
+let rtTranscriptCursor = 0;
+async function pollRtTranscripts() {
+  if (!rtRunning) return;
+  try {
+    const r = await api('/api/realtime/transcripts?since=' + rtTranscriptCursor);
+    if (r.ok && r.items) {
+      for (const item of r.items) {
+        convLine(item.role === 'user' ? 'you' : 'maxwell', item.text);
+      }
+      if (r.last_id != null) rtTranscriptCursor = r.last_id;
+    }
+  } catch (e) {}
+}
+setInterval(pollRtTranscripts, 800);
+</script>
+</body>
+</html>
+"""
+
+
+ADMITS_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Talk to Maxwell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Maxwell's palette: blue body, purple wing, brown beak/legs */
+    --maxwell-blue:   #3b8edb;
+    --maxwell-blue-2: #2b6fb8;
+    --maxwell-purple: #8b5cf6;
+    --maxwell-purple-2: #6d3fd6;
+    --maxwell-brown:  #8b5e34;
+    --maxwell-brown-2: #5f3f1f;
+    --cream:          #fff8ef;
+    --bubble-you:     #ede9fe;
+    --bubble-you-text:#4c1d95;
+    --bubble-bird:    #dbeafe;
+    --bubble-bird-text:#1e3a8a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100vh;
+    font-family: 'Baloo 2', 'Fredoka', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(160deg, #f0f4ff 0%, #fef3ec 100%);
+    color: var(--maxwell-brown-2);
+  }
+  .frame {
+    max-width: 720px; margin: 1.5rem auto 3rem; padding: 0 1rem;
+  }
+  header {
+    display: flex; align-items: center; gap: 1rem;
+    padding: 1rem 1.25rem;
+    background: white;
+    border-radius: 28px;
+    box-shadow: 0 8px 24px rgba(59,142,219,.18);
+    border: 3px solid var(--maxwell-blue);
+  }
+  .mascot {
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--maxwell-blue) 0%, var(--maxwell-purple) 100%);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 36px; line-height: 1;
+    box-shadow: inset -4px -4px 0 rgba(0,0,0,.08);
+  }
+  header h1 {
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 800;
+    font-size: 1.8rem;
+    margin: 0;
+    color: var(--maxwell-blue-2);
+    letter-spacing: -.5px;
+  }
+  header .tag {
+    font-size: .95rem;
+    color: var(--maxwell-brown);
+    font-weight: 500;
+    margin-top: 2px;
+  }
+
+  .card {
+    background: white;
+    border-radius: 28px;
+    padding: 1.25rem 1.5rem;
+    margin-top: 1rem;
+    box-shadow: 0 6px 18px rgba(139,94,246,.10);
+    border: 2px solid #ede9fe;
+  }
+  .card h2 {
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin: 0 0 .75rem;
+    color: var(--maxwell-purple-2);
+  }
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; }
+
+  .pill-group {
+    display: inline-flex;
+    background: #f3f0ff;
+    border-radius: 999px;
+    padding: 4px;
+    gap: 2px;
+  }
+  .pill-group button {
+    border: none;
+    background: transparent;
+    padding: .55rem 1.1rem;
+    font-family: inherit;
+    font-size: 1rem;
+    font-weight: 600;
+    border-radius: 999px;
+    cursor: pointer;
+    color: var(--maxwell-purple-2);
+    transition: background .15s;
+  }
+  .pill-group button.active {
+    background: var(--maxwell-purple);
+    color: white;
+    box-shadow: 0 3px 10px rgba(139,94,246,.35);
+  }
+  .pill-group button:disabled { opacity: .35; cursor: not-allowed; }
+
+  .talk-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .5rem;
+    margin: 1rem 0 .5rem;
+  }
+  #talkBtn {
+    width: 200px; height: 200px;
+    border-radius: 50%;
+    border: 6px solid var(--maxwell-blue-2);
+    background: radial-gradient(circle at 30% 30%,
+      var(--maxwell-blue) 0%,
+      var(--maxwell-blue-2) 70%,
+      var(--maxwell-purple-2) 100%);
+    color: white;
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 800;
+    font-size: 1.4rem;
+    cursor: pointer;
+    box-shadow:
+      0 12px 30px rgba(43,111,184,.4),
+      inset 0 -8px 0 rgba(0,0,0,.15);
+    transition: transform .1s, box-shadow .1s;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  #talkBtn:active, #talkBtn.held {
+    transform: translateY(4px);
+    box-shadow:
+      0 4px 12px rgba(43,111,184,.4),
+      inset 0 -2px 0 rgba(0,0,0,.15);
+    background: radial-gradient(circle at 30% 30%,
+      var(--maxwell-purple) 0%,
+      var(--maxwell-purple-2) 70%,
+      var(--maxwell-brown) 100%);
+  }
+  #talkBtn:disabled {
+    opacity: .55;
+    cursor: not-allowed;
+    background: #cbd5e1;
+    border-color: #94a3b8;
+  }
+  #talkHint {
+    font-size: 1rem;
+    color: var(--maxwell-brown);
+    font-weight: 500;
+    text-align: center;
+    min-height: 1.4em;
+  }
+
+  #status {
+    text-align: center;
+    font-weight: 600;
+    font-size: 1rem;
+    margin-top: .25rem;
+    color: var(--maxwell-purple-2);
+    min-height: 1.4em;
+  }
+  #status.live   { color: var(--maxwell-blue-2); }
+  #status.busy   { color: #c2410c; }
+  #status.error  { color: #b91c1c; }
+
+  .chat {
+    display: flex; flex-direction: column; gap: .65rem;
+    max-height: 50vh; overflow-y: auto;
+    padding: .5rem 0;
+  }
+  .bubble {
+    padding: .75rem 1.1rem;
+    border-radius: 22px;
+    max-width: 85%;
+    font-size: 1.05rem;
+    line-height: 1.4;
+    font-weight: 500;
+    box-shadow: 0 2px 6px rgba(0,0,0,.05);
+  }
+  .bubble.you {
+    align-self: flex-end;
+    background: var(--bubble-you);
+    color: var(--bubble-you-text);
+    border-bottom-right-radius: 6px;
+  }
+  .bubble.bird {
+    align-self: flex-start;
+    background: var(--bubble-bird);
+    color: var(--bubble-bird-text);
+    border-bottom-left-radius: 6px;
+    border-left: 4px solid var(--maxwell-blue);
+  }
+  .bubble .who {
+    display: block;
+    font-weight: 700;
+    font-size: .8rem;
+    opacity: .7;
+    margin-bottom: .15rem;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+  .empty {
+    text-align: center;
+    color: var(--maxwell-brown);
+    opacity: .6;
+    padding: 1rem;
+    font-size: .95rem;
+  }
+  footer {
+    text-align: center;
+    margin-top: 1.25rem;
+    font-size: .85rem;
+    color: var(--maxwell-brown);
+    opacity: .65;
+  }
+  footer a { color: var(--maxwell-purple-2); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="frame">
+
+<header>
+  <div class="mascot" aria-hidden="true">🦜</div>
+  <div>
+    <h1>Hi, I'm Maxwell!</h1>
+    <div class="tag">Stanford TEA's resident parrot · come say hi</div>
+  </div>
+</header>
+
+<section class="card">
+  <h2>How would you like to chat?</h2>
+  <div class="row" style="margin-bottom:.6rem;">
+    <span style="font-weight:600;color:var(--maxwell-brown);min-width:5.5rem;">Mode</span>
+    <div class="pill-group" id="modeGroup">
+      <button data-mode="realtime" class="active">Realtime</button>
+      <button data-mode="conversation">Take turns</button>
+    </div>
+  </div>
+  <div class="row" id="micGroupRow">
+    <span style="font-weight:600;color:var(--maxwell-brown);min-width:5.5rem;">Mic</span>
+    <div class="pill-group" id="micGroup">
+      <button data-mic="auto" class="active">Auto-listen (interrupt)</button>
+      <button data-mic="ptt">Push-to-talk</button>
+    </div>
+  </div>
+  <p style="margin:.6rem 0 0;font-size:.9rem;color:var(--maxwell-brown);">
+    <b>Realtime</b> keeps an open line — Maxwell hears you the moment you
+    talk. <b>Take turns</b> records one phrase at a time. Use
+    <b>Push-to-talk</b> in noisy rooms (it's the parrot's hold-to-speak
+    button below).
+  </p>
+</section>
+
+<section class="card">
+  <div class="talk-wrap">
+    <button id="talkBtn" disabled>Connecting…</button>
+    <div id="talkHint"></div>
+    <div id="status">Loading…</div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Conversation</h2>
+  <div id="chat" class="chat">
+    <div class="empty" id="emptyHint">Say hi to Maxwell to get started!</div>
+  </div>
+</section>
+
+<footer>
+  Built for Stanford TEA. <a href="/">Admin view</a>
+</footer>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: {'content-type': 'application/json'},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return r.json();
+}
+
+let mode = 'realtime';      // 'realtime' | 'conversation'
+let micMode = 'auto';       // 'auto' | 'ptt'
+let rtRunning = false;
+let convBusy = false;
+let rtTranscriptCursor = 0;
+
+function setStatus(msg, cls) {
+  const el = $('status');
+  el.textContent = msg;
+  el.className = cls || '';
+}
+
+function bubble(role, text) {
+  $('emptyHint')?.remove();
+  const div = document.createElement('div');
+  div.className = 'bubble ' + (role === 'you' ? 'you' : 'bird');
+  const who = document.createElement('span');
+  who.className = 'who';
+  who.textContent = role === 'you' ? 'You' : 'Maxwell';
+  const body = document.createElement('span');
+  body.textContent = text;
+  div.appendChild(who); div.appendChild(body);
+  $('chat').appendChild(div);
+  $('chat').scrollTop = $('chat').scrollHeight;
+}
+
+function setActive(group, dataAttr, value) {
+  for (const b of group.querySelectorAll('button')) {
+    b.classList.toggle('active', b.dataset[dataAttr] === value);
+  }
+}
+
+function refreshTalkButton() {
+  const btn = $('talkBtn');
+  const hint = $('talkHint');
+  if (mode === 'realtime') {
+    if (micMode === 'ptt') {
+      btn.textContent = rtRunning ? 'Hold to speak' : 'Start';
+      btn.disabled = false;
+      hint.textContent = rtRunning
+        ? 'Hold the button (or spacebar) while you talk.'
+        : 'Tap once to wake Maxwell up.';
+    } else {
+      btn.textContent = rtRunning ? 'Stop' : 'Wake Maxwell';
+      btn.disabled = false;
+      hint.textContent = rtRunning
+        ? 'Just talk! He listens and replies live.'
+        : 'Tap to start a live conversation.';
+    }
+  } else {
+    btn.textContent = convBusy ? 'Listening…' : 'Tap & talk';
+    btn.disabled = convBusy;
+    hint.textContent = convBusy
+      ? 'Speak now, then pause.'
+      : 'Tap, speak one thing, pause, and Maxwell will reply.';
+  }
+}
+
+// Mode switching
+$('modeGroup').addEventListener('click', async (e) => {
+  const t = e.target;
+  if (!t.dataset.mode || t.classList.contains('active')) return;
+  // Tear down realtime if leaving it
+  if (mode === 'realtime' && t.dataset.mode !== 'realtime' && rtRunning) {
+    await api('/api/realtime/stop', {});
+    rtRunning = false;
+  }
+  mode = t.dataset.mode;
+  setActive($('modeGroup'), 'mode', mode);
+  $('micGroupRow').style.display = (mode === 'realtime') ? 'flex' : 'none';
+  refreshTalkButton();
+  setStatus(mode === 'realtime' ? 'Ready' : 'Ready (take-turns mode)');
+});
+
+$('micGroup').addEventListener('click', async (e) => {
+  const t = e.target;
+  if (!t.dataset.mic || t.classList.contains('active')) return;
+  micMode = t.dataset.mic;
+  setActive($('micGroup'), 'mic', micMode);
+  // Tell server PTT preference; live-toggles without restart
+  await api('/api/realtime/config', {push_to_talk: micMode === 'ptt'});
+  refreshTalkButton();
+});
+
+// Realtime start/stop
+async function startRealtime() {
+  setStatus('Connecting to Maxwell…', 'busy');
+  const r = await api('/api/realtime/start', {});
+  if (!r.ok) {
+    setStatus('Couldn\\'t start: ' + (r.error || 'unknown error'), 'error');
+    return false;
+  }
+  rtRunning = true;
+  setStatus(micMode === 'ptt' ? 'Hold the button to talk' : 'Maxwell is listening', 'live');
+  refreshTalkButton();
+  return true;
+}
+async function stopRealtime() {
+  await api('/api/realtime/stop', {});
+  rtRunning = false;
+  setStatus('Stopped');
+  refreshTalkButton();
+}
+
+// PTT
+let ptt = false;
+async function pttDown() {
+  if (mode !== 'realtime' || micMode !== 'ptt' || ptt) return;
+  if (!rtRunning) { await startRealtime(); }
+  if (!rtRunning) return;
+  ptt = true;
+  $('talkBtn').classList.add('held');
+  setStatus('Listening…', 'live');
+  await api('/api/realtime/ptt', {action: 'down'});
+}
+async function pttUp() {
+  if (!ptt) return;
+  ptt = false;
+  $('talkBtn').classList.remove('held');
+  setStatus('Maxwell is thinking…', 'busy');
+  await api('/api/realtime/ptt', {action: 'up'});
+}
+
+// Talk button click handling
+$('talkBtn').addEventListener('mousedown', e => {
+  if (mode === 'realtime' && micMode === 'ptt' && rtRunning) pttDown();
+});
+$('talkBtn').addEventListener('mouseup', e => {
+  if (mode === 'realtime' && micMode === 'ptt') pttUp();
+});
+$('talkBtn').addEventListener('mouseleave', e => {
+  if (ptt) pttUp();
+});
+$('talkBtn').addEventListener('touchstart', e => {
+  if (mode === 'realtime' && micMode === 'ptt' && rtRunning) {
+    e.preventDefault(); pttDown();
+  }
+}, {passive:false});
+$('talkBtn').addEventListener('touchend', e => {
+  if (mode === 'realtime' && micMode === 'ptt') {
+    e.preventDefault(); pttUp();
+  }
+}, {passive:false});
+
+$('talkBtn').addEventListener('click', async (e) => {
+  // Click semantics depend on mode
+  if (mode === 'realtime') {
+    if (micMode === 'auto') {
+      if (!rtRunning) await startRealtime(); else await stopRealtime();
+    } else if (!rtRunning) {
+      await startRealtime();
+    }
+    return;
+  }
+  // Conversation (take-turns) mode
+  if (convBusy) return;
+  convBusy = true;
+  refreshTalkButton();
+  setStatus('Listening…', 'live');
+  try {
+    const r = await api('/api/converse', {});
+    if (!r.ok) {
+      setStatus('Error: ' + (r.error || 'unknown'), 'error');
+    } else {
+      if (r.user_text) bubble('you', r.user_text);
+      if (r.reply) bubble('bird', r.reply);
+      setStatus('Your turn');
+    }
+  } finally {
+    convBusy = false;
+    refreshTalkButton();
+  }
+});
+
+// Spacebar = PTT in realtime+ptt
+let spaceHeld = false;
+window.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || e.repeat) return;
+  if (mode !== 'realtime' || micMode !== 'ptt') return;
+  e.preventDefault();
+  if (!spaceHeld) { spaceHeld = true; pttDown(); }
+});
+window.addEventListener('keyup', e => {
+  if (e.code !== 'Space') return;
+  if (spaceHeld) { spaceHeld = false; pttUp(); }
+});
+
+// Poll transcripts (works for realtime mode; conversation mode uses /api/converse return values)
+async function pollTranscripts() {
+  if (mode !== 'realtime' || !rtRunning) return;
+  try {
+    const r = await api('/api/realtime/transcripts?since=' + rtTranscriptCursor);
+    if (r.ok && r.items) {
+      for (const item of r.items) {
+        bubble(item.role === 'user' ? 'you' : 'bird', item.text);
+      }
+      if (r.last_id != null) rtTranscriptCursor = r.last_id;
+    }
+  } catch (e) {}
+}
+setInterval(pollTranscripts, 800);
+
+// Boot: load config to pick up the current PTT setting + connection status
+(async () => {
+  const cfg = await api('/api/config');
+  if (cfg && cfg.realtime && cfg.realtime.push_to_talk) {
+    micMode = 'ptt';
+    setActive($('micGroup'), 'mic', 'ptt');
+  }
+  const cs = await api('/api/connection/status');
+  if (!cs.connected) {
+    setStatus('Maxwell is offline. Ask the operator to plug him in.', 'error');
+    $('talkBtn').disabled = true;
+    $('talkBtn').textContent = 'Offline';
+    $('talkHint').textContent = '';
+    return;
+  }
+  const rs = await api('/api/realtime/status');
+  rtRunning = !!rs.running;
+  setStatus(rtRunning ? 'Maxwell is listening' : 'Ready', rtRunning ? 'live' : '');
+  refreshTalkButton();
+})();
 </script>
 </body>
 </html>
@@ -495,6 +1337,24 @@ class AppState:
         # If True, do a ~400ms jaw wiggle before every spoken utterance.
         # Acts as a pre-emptive reseat for the flaky GPIO 9 connection.
         self.prewarm_jaw = False
+        # Realtime transcript ring buffer surfaced to the UI. Each entry
+        # is a monotonically-increasing dict so the UI can poll with a
+        # ``since`` cursor and only fetch what's new since its last
+        # call. Capped to keep memory bounded across long sessions.
+        self._rt_transcripts: list[dict] = []
+        self._rt_transcript_seq = 0
+        self._rt_transcript_max = 200
+
+    def push_rt_transcript(self, role: str, text: str) -> None:
+        self._rt_transcript_seq += 1
+        self._rt_transcripts.append(
+            {"id": self._rt_transcript_seq, "role": role, "text": text}
+        )
+        if len(self._rt_transcripts) > self._rt_transcript_max:
+            self._rt_transcripts = self._rt_transcripts[-self._rt_transcript_max:]
+
+    def rt_transcripts_since(self, since: int) -> list[dict]:
+        return [t for t in self._rt_transcripts if t["id"] > since]
 
     async def maybe_prewarm_jaw(self) -> None:
         """Run a short jaw hammer before speaking if the user enabled it."""
@@ -600,6 +1460,9 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
     async def index(_req: web.Request) -> web.Response:
         return web.Response(text=INDEX_HTML, content_type="text/html")
 
+    async def admits_page(_req: web.Request) -> web.Response:
+        return web.Response(text=ADMITS_HTML, content_type="text/html")
+
     async def api_config(_req: web.Request) -> web.Response:
         cfg = state.config
         jaw = cfg.bottango.serial.jaw
@@ -638,6 +1501,24 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
                 "instructions": instructions,
                 "personality": personality,
                 "prewarm_jaw": bool(state.prewarm_jaw),
+                "realtime": {
+                    "model": cfg.realtime.model,
+                    "voice": cfg.realtime.voice,
+                    "instructions": cfg.realtime.instructions,
+                    "vad_type": cfg.realtime.vad_type,
+                    "vad_threshold": cfg.realtime.vad_threshold,
+                    "vad_prefix_padding_ms": cfg.realtime.vad_prefix_padding_ms,
+                    "vad_silence_duration_ms": cfg.realtime.vad_silence_duration_ms,
+                    "vad_eagerness": cfg.realtime.vad_eagerness,
+                    "noise_reduction": cfg.realtime.noise_reduction,
+                    "half_duplex": cfg.realtime.half_duplex,
+                    "playback_tail_ms": cfg.realtime.playback_tail_ms,
+                    "barge_in_enabled": cfg.realtime.barge_in_enabled,
+                    "barge_in_rms_threshold": cfg.realtime.barge_in_rms_threshold,
+                    "barge_in_above_ambient_factor": cfg.realtime.barge_in_above_ambient_factor,
+                    "barge_in_min_frames": cfg.realtime.barge_in_min_frames,
+                    "push_to_talk": cfg.realtime.push_to_talk,
+                },
             }
         )
 
@@ -688,6 +1569,316 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
     async def api_stop(_req: web.Request) -> web.Response:
         await state.stop()
         return web.json_response({"ok": True})
+
+    async def _start_realtime_with_current_config(api_key: str) -> None:
+        rt = state.config.realtime
+        await state.pipeline.start_realtime(
+            api_key=api_key,
+            model=rt.model,
+            voice=rt.voice,
+            instructions=rt.instructions or state.config.personality,
+            vad_type=rt.vad_type,
+            vad_threshold=rt.vad_threshold,
+            vad_prefix_padding_ms=rt.vad_prefix_padding_ms,
+            vad_silence_duration_ms=rt.vad_silence_duration_ms,
+            vad_eagerness=rt.vad_eagerness,
+            noise_reduction=rt.noise_reduction,
+            half_duplex=rt.half_duplex,
+            playback_tail_ms=rt.playback_tail_ms,
+            barge_in_enabled=rt.barge_in_enabled,
+            barge_in_rms_threshold=rt.barge_in_rms_threshold,
+            barge_in_above_ambient_factor=rt.barge_in_above_ambient_factor,
+            barge_in_min_frames=rt.barge_in_min_frames,
+            push_to_talk=rt.push_to_talk,
+            transcript_callback=state.push_rt_transcript,
+        )
+
+    async def api_realtime_start(_req: web.Request) -> web.Response:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            return web.json_response(
+                {"ok": False, "error": "OPENAI_API_KEY not set"}
+            )
+        try:
+            async with state.lock:
+                await state.ensure_pipeline()
+                await _start_realtime_with_current_config(api_key)
+            return web.json_response({"ok": True, "running": True})
+        except Exception as e:  # noqa: BLE001
+            log.exception("realtime start failed")
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_realtime_stop(_req: web.Request) -> web.Response:
+        try:
+            async with state.lock:
+                if state.pipeline is not None:
+                    await state.pipeline.stop_realtime()
+            return web.json_response({"ok": True, "running": False})
+        except Exception as e:  # noqa: BLE001
+            log.exception("realtime stop failed")
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_realtime_status(_req: web.Request) -> web.Response:
+        running = bool(
+            state.pipeline is not None and state.pipeline.realtime_running
+        )
+        return web.json_response({"ok": True, "running": running})
+
+    async def api_realtime_ptt(req: web.Request) -> web.Response:
+        """Push-to-talk down/up signal. Body: ``{"action": "down"|"up"}``.
+
+        Down opens the mic and cancels any in-flight assistant
+        response (acts as immediate barge-in). Up commits the buffered
+        audio and asks for a response. Both are no-ops when PTT mode
+        isn't on or the realtime session isn't running."""
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        action = str(body.get("action", "")).lower()
+        if state.pipeline is None or not state.pipeline.realtime_running:
+            return web.json_response(
+                {"ok": False, "error": "realtime not running"}
+            )
+        if action == "down":
+            ok = await state.pipeline.realtime_ptt_down()
+        elif action == "up":
+            ok = await state.pipeline.realtime_ptt_up()
+        else:
+            return web.json_response(
+                {"ok": False, "error": "action must be 'down' or 'up'"}
+            )
+        return web.json_response({"ok": bool(ok), "action": action})
+
+    async def api_connect(_req: web.Request) -> web.Response:
+        """(Re)build the pipeline + open the serial backend."""
+        try:
+            async with state.lock:
+                if state.pipeline is not None:
+                    return web.json_response(
+                        {"ok": True, "connected": True, "noop": True}
+                    )
+                await state._create_pipeline()
+            return web.json_response({"ok": True, "connected": True})
+        except Exception as e:  # noqa: BLE001
+            log.exception("connect failed")
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_disconnect(_req: web.Request) -> web.Response:
+        """End the session: stop realtime, center servos, tear down
+        the pipeline (closing the serial port). The webapp stays up;
+        click Connect to bring it back."""
+        try:
+            from motion.models import MotionFrame
+            async with state.lock:
+                if state.pipeline is not None and state.pipeline.realtime_running:
+                    try:
+                        await state.pipeline.stop_realtime()
+                    except Exception:  # noqa: BLE001
+                        log.exception("disconnect: stop_realtime failed")
+                if state.backend is not None:
+                    try:
+                        await state.backend.send_frame(
+                            MotionFrame(
+                                jaw_open=0.0,
+                                head_lr=0.5,
+                                head_ud=0.5,
+                                wing=0.0,
+                            )
+                        )
+                        await asyncio.sleep(0.2)
+                    except Exception:  # noqa: BLE001
+                        log.exception("disconnect: failed to center servos")
+                if state.pipeline is not None:
+                    try:
+                        await state.pipeline.__aexit__(None, None, None)
+                    except Exception:  # noqa: BLE001
+                        log.exception("disconnect: pipeline teardown failed")
+                    state.pipeline = None
+                state.backend = None
+            return web.json_response({"ok": True, "connected": False})
+        except Exception as e:  # noqa: BLE001
+            log.exception("disconnect failed")
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_connection_status(_req: web.Request) -> web.Response:
+        connected = state.pipeline is not None
+        return web.json_response({"ok": True, "connected": connected})
+
+    async def api_realtime_transcripts(req: web.Request) -> web.Response:
+        try:
+            since = int(req.query.get("since", "0"))
+        except ValueError:
+            since = 0
+        items = state.rt_transcripts_since(since)
+        last_id = items[-1]["id"] if items else since
+        return web.json_response(
+            {"ok": True, "items": items, "last_id": last_id}
+        )
+
+    async def api_realtime_config(req: web.Request) -> web.Response:
+        body = await req.json()
+        rt = state.config.realtime
+        changed = False
+        if "voice" in body:
+            v = str(body["voice"]).strip()
+            if v and v != rt.voice:
+                rt.voice = v
+                changed = True
+        if "model" in body:
+            m = str(body["model"]).strip()
+            if m and m != rt.model:
+                rt.model = m
+                changed = True
+        if "instructions" in body:
+            inst = str(body["instructions"])
+            if inst != rt.instructions:
+                rt.instructions = inst
+                changed = True
+        if "vad_type" in body:
+            vt = str(body["vad_type"]).strip()
+            if vt in ("server_vad", "semantic_vad") and vt != rt.vad_type:
+                rt.vad_type = vt
+                changed = True
+        if "vad_threshold" in body:
+            try:
+                t = float(body["vad_threshold"])
+            except (TypeError, ValueError):
+                t = rt.vad_threshold
+            t = max(0.0, min(1.0, t))
+            if abs(t - rt.vad_threshold) > 1e-6:
+                rt.vad_threshold = t
+                changed = True
+        if "vad_prefix_padding_ms" in body:
+            try:
+                p = int(body["vad_prefix_padding_ms"])
+            except (TypeError, ValueError):
+                p = rt.vad_prefix_padding_ms
+            p = max(0, min(2000, p))
+            if p != rt.vad_prefix_padding_ms:
+                rt.vad_prefix_padding_ms = p
+                changed = True
+        if "vad_silence_duration_ms" in body:
+            try:
+                s = int(body["vad_silence_duration_ms"])
+            except (TypeError, ValueError):
+                s = rt.vad_silence_duration_ms
+            s = max(50, min(5000, s))
+            if s != rt.vad_silence_duration_ms:
+                rt.vad_silence_duration_ms = s
+                changed = True
+        if "vad_eagerness" in body:
+            e = str(body["vad_eagerness"]).strip()
+            if e in ("low", "medium", "high", "auto") and e != rt.vad_eagerness:
+                rt.vad_eagerness = e
+                changed = True
+        if "noise_reduction" in body:
+            n = str(body["noise_reduction"]).strip()
+            if n in ("off", "near_field", "far_field") and n != rt.noise_reduction:
+                rt.noise_reduction = n
+                changed = True
+        if "half_duplex" in body:
+            hd = bool(body["half_duplex"])
+            if hd != rt.half_duplex:
+                rt.half_duplex = hd
+                changed = True
+        if "playback_tail_ms" in body:
+            try:
+                tail = int(body["playback_tail_ms"])
+            except (TypeError, ValueError):
+                tail = rt.playback_tail_ms
+            tail = max(0, min(2000, tail))
+            if tail != rt.playback_tail_ms:
+                rt.playback_tail_ms = tail
+                changed = True
+        if "barge_in_enabled" in body:
+            bi = bool(body["barge_in_enabled"])
+            if bi != rt.barge_in_enabled:
+                rt.barge_in_enabled = bi
+                changed = True
+        if "barge_in_rms_threshold" in body:
+            try:
+                v = float(body["barge_in_rms_threshold"])
+            except (TypeError, ValueError):
+                v = rt.barge_in_rms_threshold
+            v = max(0.0, min(1.0, v))
+            if abs(v - rt.barge_in_rms_threshold) > 1e-6:
+                rt.barge_in_rms_threshold = v
+                changed = True
+        if "barge_in_above_ambient_factor" in body:
+            try:
+                v = float(body["barge_in_above_ambient_factor"])
+            except (TypeError, ValueError):
+                v = rt.barge_in_above_ambient_factor
+            v = max(1.0, min(20.0, v))
+            if abs(v - rt.barge_in_above_ambient_factor) > 1e-6:
+                rt.barge_in_above_ambient_factor = v
+                changed = True
+        if "barge_in_min_frames" in body:
+            try:
+                v = int(body["barge_in_min_frames"])
+            except (TypeError, ValueError):
+                v = rt.barge_in_min_frames
+            v = max(1, min(50, v))
+            if v != rt.barge_in_min_frames:
+                rt.barge_in_min_frames = v
+                changed = True
+        # Push-to-talk toggles live without restarting the WebSocket:
+        # the session_update path on RealtimeSession reconfigures
+        # turn_detection in place. Only flip the cached config; the
+        # live toggle below applies it without a session restart.
+        ptt_changed_live = False
+        if "push_to_talk" in body:
+            ptt = bool(body["push_to_talk"])
+            if ptt != rt.push_to_talk:
+                rt.push_to_talk = ptt
+                ptt_changed_live = True
+        was_running = bool(
+            state.pipeline is not None and state.pipeline.realtime_running
+        )
+        if ptt_changed_live and was_running:
+            try:
+                await state.pipeline.realtime_set_push_to_talk(rt.push_to_talk)
+            except Exception:  # noqa: BLE001
+                log.exception("realtime: live PTT toggle failed")
+        if changed and was_running:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                return web.json_response(
+                    {"ok": False, "error": "OPENAI_API_KEY not set"}
+                )
+            try:
+                async with state.lock:
+                    await _start_realtime_with_current_config(api_key)
+            except Exception as e:  # noqa: BLE001
+                log.exception("realtime restart failed")
+                return web.json_response({"ok": False, "error": str(e)})
+        log.info(
+            "realtime config: voice=%s model=%s vad=%s thr=%.2f silence=%dms noise=%s (running=%s)",
+            rt.voice,
+            rt.model,
+            rt.vad_type,
+            rt.vad_threshold,
+            rt.vad_silence_duration_ms,
+            rt.noise_reduction,
+            was_running,
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "running": was_running,
+                "voice": rt.voice,
+                "model": rt.model,
+                "vad_type": rt.vad_type,
+                "vad_threshold": rt.vad_threshold,
+                "vad_prefix_padding_ms": rt.vad_prefix_padding_ms,
+                "vad_silence_duration_ms": rt.vad_silence_duration_ms,
+                "vad_eagerness": rt.vad_eagerness,
+                "noise_reduction": rt.noise_reduction,
+                "half_duplex": rt.half_duplex,
+                "playback_tail_ms": rt.playback_tail_ms,
+            }
+        )
 
     async def api_tuning(req: web.Request) -> web.Response:
         body = await req.json()
@@ -878,6 +2069,7 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
             return web.json_response({"ok": False, "error": str(e)})
 
     app.router.add_get("/", index)
+    app.router.add_get("/admits", admits_page)
     app.router.add_get("/api/config", api_config)
     app.router.add_get("/api/log", api_log)
     app.router.add_post("/api/speak", api_speak)
@@ -891,6 +2083,15 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
     app.router.add_post("/api/converse", api_converse)
     app.router.add_post("/api/wake", api_wake)
     app.router.add_post("/api/full-reset", api_full_reset)
+    app.router.add_post("/api/realtime/start", api_realtime_start)
+    app.router.add_post("/api/realtime/stop", api_realtime_stop)
+    app.router.add_get("/api/realtime/status", api_realtime_status)
+    app.router.add_get("/api/realtime/transcripts", api_realtime_transcripts)
+    app.router.add_post("/api/realtime/ptt", api_realtime_ptt)
+    app.router.add_post("/api/connect", api_connect)
+    app.router.add_post("/api/disconnect", api_disconnect)
+    app.router.add_get("/api/connection/status", api_connection_status)
+    app.router.add_post("/api/realtime/config", api_realtime_config)
 
     async def _on_cleanup(_app: web.Application) -> None:
         await state.shutdown()

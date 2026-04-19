@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from conversation.audio import (
     AudioBuffer,
@@ -124,6 +124,8 @@ class ConversationPipeline:
 
     _speaking_ctx: Optional[LiveSpeakingContext] = None
     _scheduler: Optional[MotionScheduler] = None
+    _rt_session: Optional[object] = None
+    _rt_lock: Optional[asyncio.Lock] = None
 
     async def __aenter__(self) -> "ConversationPipeline":
         behavior = BehaviorEngine(gains=self.behavior_gains)
@@ -139,6 +141,7 @@ class ConversationPipeline:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.stop_realtime()
         if self._scheduler is not None:
             await self._scheduler.stop()
 
@@ -187,6 +190,194 @@ class ConversationPipeline:
         reply = await self.llm.reply(user_text, personality=self.personality)
         await self.say(reply)
         return reply
+
+    # ------------------------------------------------------------
+    # Realtime API mode
+    #
+    # Opens a single OpenAI Realtime websocket session that streams
+    # mic audio up and assistant audio down. Same envelope-follower /
+    # state-machine plumbing as the typed-text path, so jaw motion
+    # stays in lockstep with what the speaker is actually saying with
+    # no second motion code path.
+    # ------------------------------------------------------------
+
+    async def start_realtime(
+        self,
+        *,
+        api_key: str,
+        model: str = "gpt-realtime",
+        voice: str = "ballad",
+        instructions: str = "",
+        input_device: Optional[str | int] = None,
+        vad_type: str = "server_vad",
+        vad_threshold: float = 0.7,
+        vad_prefix_padding_ms: int = 300,
+        vad_silence_duration_ms: int = 700,
+        vad_eagerness: str = "low",
+        noise_reduction: str = "far_field",
+        half_duplex: bool = True,
+        playback_tail_ms: int = 400,
+        barge_in_enabled: bool = True,
+        barge_in_rms_threshold: float = 0.06,
+        barge_in_above_ambient_factor: float = 5.0,
+        barge_in_min_frames: int = 4,
+        push_to_talk: bool = False,
+        transcript_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
+        """Start (or restart) a Realtime API session. Idempotent."""
+        from conversation.realtime import REALTIME_SAMPLE_RATE, RealtimeSession
+
+        if self._rt_lock is None:
+            self._rt_lock = asyncio.Lock()
+        async with self._rt_lock:
+            if self._rt_session is not None and getattr(self._rt_session, "is_running", False):
+                log.info("realtime: replacing existing session")
+                try:
+                    await self._rt_session.stop()
+                except Exception:  # noqa: BLE001
+                    log.exception("realtime: error stopping previous session")
+                self._rt_session = None
+
+            follower = EnvelopeFollower(
+                sample_rate=REALTIME_SAMPLE_RATE,
+                calibration=self.jaw_calibration,
+                frame_ms=self.audio_frame_ms,
+            )
+            ctx = LiveSpeakingContext(envelope_follower=follower)
+            ctx.set_utterance(text="(realtime)", duration_s=60.0)
+            self._speaking_ctx = ctx
+
+            env_count = {"n": 0, "last": 0.0}
+
+            def envelope_cb(rms: float) -> None:
+                ctx.update_from_audio(progress=0.5, rms=rms)
+                env_count["n"] += 1
+                now = time.monotonic()
+                if now - env_count["last"] > 2.0:
+                    log.info(
+                        "realtime: envelope driving jaw (%d frames, rms=%.3f)",
+                        env_count["n"],
+                        rms,
+                    )
+                    env_count["n"] = 0
+                    env_count["last"] = now
+
+            async def state_cb(name: str) -> None:
+                log.info("realtime: state -> %s", name)
+                if name == "listening":
+                    await self.state_machine.listening()
+                elif name == "thinking":
+                    await self.state_machine.thinking()
+                elif name == "speaking":
+                    # Re-arm the speaking context for this fresh
+                    # response: resets the envelope follower (so we
+                    # don't carry decay state from a previous turn) and
+                    # arms the phrase-start nod. Without this, the jaw
+                    # only animates on the first response of the
+                    # session, then sits idle on subsequent replies.
+                    ctx.set_utterance(text="(realtime)", duration_s=60.0)
+                    env_count["n"] = 0
+                    env_count["last"] = 0.0
+                    await self.state_machine.speaking()
+                else:
+                    await self.state_machine.idle()
+
+            session = RealtimeSession(
+                api_key=api_key,
+                model=model,
+                voice=voice,
+                instructions=instructions or self.personality,
+                input_device=input_device,
+                output_device=self.playback_device,
+                envelope_callback=envelope_cb,
+                state_callback=state_cb,
+                vad_type=vad_type,
+                vad_threshold=vad_threshold,
+                vad_prefix_padding_ms=vad_prefix_padding_ms,
+                vad_silence_duration_ms=vad_silence_duration_ms,
+                vad_eagerness=vad_eagerness,
+                noise_reduction=noise_reduction,
+                half_duplex=half_duplex,
+                playback_tail_ms=playback_tail_ms,
+                barge_in_enabled=barge_in_enabled,
+                barge_in_rms_threshold=barge_in_rms_threshold,
+                barge_in_above_ambient_factor=barge_in_above_ambient_factor,
+                barge_in_min_frames=barge_in_min_frames,
+                push_to_talk=push_to_talk,
+                transcript_callback=transcript_callback,
+            )
+            await session.start()
+            self._rt_session = session
+
+            # Visible "I'm awake" — flap the wing once so the user has
+            # immediate confirmation that realtime mode launched and the
+            # serial backend is reachable, without waiting for the
+            # assistant's first audio response.
+            if hasattr(self.backend, "send_frame"):
+                from motion.models import MotionFrame
+                try:
+                    await self.backend.send_frame(
+                        MotionFrame(jaw_open=0.0, head_lr=0.5, head_ud=0.5, wing=1.0)
+                    )
+                    await asyncio.sleep(0.25)
+                    await self.backend.send_frame(
+                        MotionFrame(jaw_open=0.0, head_lr=0.5, head_ud=0.5, wing=0.0)
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception("realtime: wake flap failed (non-fatal)")
+
+    async def stop_realtime(self) -> None:
+        """Tear down the Realtime session if one is open. Idempotent."""
+        if self._rt_lock is None:
+            self._rt_lock = asyncio.Lock()
+        async with self._rt_lock:
+            if self._rt_session is None:
+                return
+            try:
+                await self._rt_session.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("realtime: error during stop")
+            self._rt_session = None
+            self._speaking_ctx = None
+            await self.state_machine.idle()
+
+    @property
+    def realtime_running(self) -> bool:
+        return self._rt_session is not None and getattr(
+            self._rt_session, "is_running", False
+        )
+
+    async def realtime_set_push_to_talk(self, enabled: bool) -> bool:
+        """Toggle PTT on the live Realtime session.
+        Returns ``True`` if a change was applied. ``False`` if there
+        was no session or the value was already correct."""
+        if self._rt_session is None:
+            return False
+        try:
+            return await self._rt_session.set_push_to_talk(enabled)
+        except Exception:  # noqa: BLE001
+            log.exception("realtime: set_push_to_talk failed")
+            return False
+
+    async def realtime_ptt_down(self) -> bool:
+        if self._rt_session is None:
+            return False
+        try:
+            await self._rt_session.ptt_down()
+            return True
+        except Exception:  # noqa: BLE001
+            log.exception("realtime: ptt_down failed")
+            return False
+
+    async def realtime_ptt_up(self) -> bool:
+        if self._rt_session is None:
+            return False
+        try:
+            await self._rt_session.ptt_up()
+            return True
+        except Exception:  # noqa: BLE001
+            log.exception("realtime: ptt_up failed")
+            return False
 
     async def handle_live_turn(self) -> tuple[str, str]:
         await self.state_machine.listening()

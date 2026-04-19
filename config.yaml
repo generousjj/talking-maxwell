@@ -12,8 +12,9 @@ personality: |
   genuinely helpful conversationalist — you can talk about anything,
   not just the club. Give real, thoughtful answers; do not dumb things
   down or pretend to be a literal-minded bird. Keep replies to one or
-  two short sentences so the conversation flows. You can respond in any
-  language the user speaks to you in.
+  two short sentences so the conversation flows. Always reply in
+  English, even if the user speaks to you in another language — if
+  they do, gently respond in English anyway.
 
   Do NOT say the written word "squawk", "polly", or any onomatopoeia in
   your replies — text-to-speech reads those literally as English words
@@ -70,37 +71,48 @@ audio:
 motion:
   rate_hz: 30.0
   jaw:
-    # floor/ceiling bound the envelope output; min_pwm/max_pwm (in
-    # bottango.serial.jaw) set the actual physical range. Defaults use the
-    # FULL physical range — loud peaks hit max travel, silence parks shut.
-    floor: 0.0               # fully closed between utterances
-    ceiling: 1.0             # peaks drive to the opposite PWM endpoint
-    noise_floor: 0.010       # RMS deadband below which jaw snaps to floor
-    # Softer attack/release keep the envelope from flipping direction 20
-    # times per second. Long-wire jaw servos need breathing room between
-    # reversals or they stop tracking at all.
-    attack: 0.55             # how fast jaw opens on syllable onsets
-    release: 0.22            # how fast jaw closes between syllables
-    peak_hold_ms: 60.0       # briefly hold peaks so short spikes actually reach the servo
-    # 7.5 lets typical speech sit mostly open with peaks pinning to ceiling.
-    # Drop toward 5.0 if it looks "always open"; raise toward 9.0 if peaks
-    # barely reach fully-open.
-    gain: 7.5                # multiplies RMS; raise to open wider on quiet speech
+    # JAW RESTORED to the values that were working right after the
+    # invert-flag fix earlier in development (transcript moment: "I
+    # think it might be backwards"). Everything else (head, wing,
+    # behavior gains, throttling) is left at the current tuned values.
+    floor: 0.08              # original (was 0.0)
+    ceiling: 0.90            # original (was 1.0)
+    noise_floor: 0.010       # unchanged
+    attack: 0.55             # unchanged
+    release: 0.20            # original (was 0.22)
+    peak_hold_ms: 40.0       # original (was 60.0)
+    gain: 1.6                # original (was 7.5)
   behavior:
     # Fractions of each channel's full travel. Increase for a more animated
     # parrot, decrease for a calmer one.
-    head_lr_drift: 0.25            # yaw wander while talking (±25% of range)
-    head_ud_drift: 0.18            # pitch wander
-    nod_strength: 0.28             # phrase-start nod magnitude
-    emphasis_strength: 0.18        # jaw+head bump on loud syllables
-    question_tilt: 0.22            # cute tilt on "?" endings
-    envelope_head_bob: 0.12        # continuous head bob tied to speech loudness
+    head_lr_drift: 0.32            # yaw wander while talking (±32% of range)
+    head_ud_drift: 0.26            # pitch wander
+    nod_strength: 0.45             # phrase-start nod magnitude (big, visible dip)
+    emphasis_strength: 0.26        # jaw+head bump on loud syllables
+    question_tilt: 0.32            # cute tilt on "?" endings
+    envelope_head_bob: 0.22        # continuous head bob tied to speech loudness
     speaking_drift_rate: 0.8       # probability/sec of new head drift target
-    wing_strength: 0.85
+    wing_strength: 1.0             # speaking-mode flap (pinned to full travel)
+    waiting_wing_strength: 0.69    # idle / listening / thinking flap (25% bigger than 0.55)
     wing_cooldown_s: 2.0           # min seconds between wing flaps
     idle_jitter: 0.03
     listening_jitter: 0.05
     thinking_tilt: 0.12
+    # Idle head motion: continuous slow sines on head_ud (nod) and
+    # head_lr (tilt), running on independent (non-harmonic) periods so
+    # the combined head + wing motion never repeats and never sits
+    # still. Magnitudes are amplitudes of the sine — head_ud dips up
+    # to `idle_nod_strength` below center; head_lr swings ±
+    # `idle_tilt_strength` around center.
+    idle_nod_strength: 0.30
+    idle_tilt_strength: 0.20
+    idle_nod_period_s: 3.7         # head bob cycle length
+    idle_tilt_period_s: 5.1        # head tilt cycle length (coprime with nod + wing)
+    # Output-side lowpass on head channels. Lower = peaks reach further
+    # (head feels punchier), higher = smoother but the bobs/nods get
+    # eaten by the filter. 0.08s keeps it smooth without dampening the
+    # actual nod motion.
+    head_smoothing_tau_s: 0.08
     seed: null                      # set an int for fully deterministic motion
 
 bottango:
@@ -120,29 +132,22 @@ bottango:
     command_timeout_s: 1.5
     compressed_signal_max: 8192    # Bottango's COMPRESSED_SIGNAL_MAX (was 1000 pre-0.6.1a)
     min_delta_for_send: 0.004
-    # Jaw-specific throttling. If your jaw servo has extension wires (or
-    # just shows as "no movement during speech" while the wiggle test works),
-    # these are the right knobs — they stop us from flooding a long, noisy
-    # signal line with sub-percent flutter at 20+ Hz.
-    jaw_min_delta: 0.020              # Skip jaw updates smaller than 2%
-    jaw_min_send_interval_s: 0.08     # Cap jaw serial writes at ~12 Hz
+    # Jaw-specific throttling DISABLED — back to the post-invert state
+    # where every jaw delta got through. Restore (jaw_min_delta=0.020,
+    # jaw_min_send_interval_s=0.08) only if the jaw signal line floods.
+    jaw_min_delta: 0.0
+    jaw_min_send_interval_s: 0.0
     # The PWM ranges below match the Maxwell reference project exactly.
     # They're enforced by Bottango firmware, so they double as safety rails.
     jaw:                            # MouthServo
       pin: 9
       min_pwm: 1450
-      # 1775 is a compromise between expressive travel and staying off the
-      # mechanical stop. If the servo hums or stalls at peaks, drop back
-      # toward 1750 in -25μs steps. Pushing past 1800 on some builds
-      # drives the horn into its endstop and the servo goes silent.
-      max_pwm: 1775
-      # Slower slew = the firmware interpolates smoothly between targets,
-      # which is much kinder to a jaw servo with long extension wires than
-      # hair-trigger 3000μs/s reversals.
-      max_pwm_per_sec: 1200
+      # JAW RESTORED to the post-invert-fix range (1450-1800 / slew
+      # 3000μs/s). If the servo hums or stalls at peaks, drop max_pwm
+      # back toward 1750 in -25μs steps.
+      max_pwm: 1800
+      max_pwm_per_sec: 3000
       starting_pwm: null
-      # If loud syllables physically CLOSE the beak instead of opening it,
-      # set this to true (servo mounted in the reverse direction).
       invert: true
     head_lr:                        # HeadRotationServo
       pin: 5
@@ -173,6 +178,28 @@ bottango:
   head_lr_identifier: "head_lr_api"
   head_ud_identifier: "head_ud_api"
   wing_identifier: "wing_api"
+
+# OpenAI Realtime API mode (low-latency speech-to-speech). Toggle from
+# the web UI's "Start realtime mode" button. ``instructions`` falls back
+# to the top-level ``personality`` when blank.
+realtime:
+  enabled: true
+  model: gpt-realtime
+  voice: ballad
+  instructions: ""
+  vad_type: server_vad
+  vad_threshold: 0.7
+  vad_prefix_padding_ms: 300
+  vad_silence_duration_ms: 700
+  vad_eagerness: low
+  noise_reduction: far_field
+  half_duplex: true
+  playback_tail_ms: 400
+  barge_in_enabled: true
+  barge_in_rms_threshold: 0.06
+  barge_in_above_ambient_factor: 5.0
+  barge_in_min_frames: 4
+  push_to_talk: false
 
 logging:
   level: INFO

@@ -143,6 +143,68 @@ class BottangoConfig:
 
 
 @dataclass
+class RealtimeConfig:
+    """OpenAI Realtime API mode (low-latency speech-in / speech-out).
+
+    Independent of the regular STT / LLM / TTS providers; toggled at
+    runtime via the webapp. ``instructions`` falls back to
+    :class:`AppConfig.personality` if left blank, so by default the
+    Realtime voice inherits the same personality as the typed-text mode.
+
+    The VAD knobs default to noisy-environment-friendly values:
+    far-field server-side noise reduction (good for a laptop mic at
+    events), a higher activation threshold (0.7 instead of OpenAI's
+    default 0.5), and a longer trailing silence window so the user can
+    pause mid-sentence without getting cut off.
+    """
+
+    enabled: bool = True
+    model: str = "gpt-realtime"
+    voice: str = "ballad"
+    instructions: str = ""
+
+    # ---- Voice activity detection ----
+    vad_type: str = "server_vad"  # "server_vad" | "semantic_vad"
+    vad_threshold: float = 0.7
+    vad_prefix_padding_ms: int = 300
+    vad_silence_duration_ms: int = 700
+    vad_eagerness: str = "low"  # only used when vad_type == "semantic_vad"
+
+    # ---- Server-side noise reduction ----
+    # "off" | "near_field" (headsets/AirPods) | "far_field" (laptop /
+    # conference mic in noisy room). Far-field is the right pick for a
+    # laptop running at an event.
+    noise_reduction: str = "far_field"
+
+    # ---- Half-duplex echo suppression ----
+    # OpenAI's Realtime API has no built-in AEC. With Maxwell's speaker
+    # near the laptop mic the assistant's voice loops back into the mic
+    # and he runs away talking to himself. Half-duplex mode stops
+    # forwarding mic frames to the server while playback is in flight,
+    # plus a tail to swallow speaker reverb. Disable only if the mic is
+    # genuinely isolated from playback (headset / AirPods).
+    half_duplex: bool = True
+    playback_tail_ms: int = 400
+
+    # Smart barge-in: while half_duplex has the mic muted, watch local
+    # mic RMS; if the user is clearly louder than speaker leakage the
+    # mic un-mutes and the in-flight server response is cancelled so
+    # the user can interrupt naturally. Disable to revert to "wait
+    # your turn" half-duplex.
+    barge_in_enabled: bool = True
+    barge_in_rms_threshold: float = 0.06
+    barge_in_above_ambient_factor: float = 5.0
+    barge_in_min_frames: int = 4
+
+    # Push-to-talk: when true, server VAD is disabled and the mic only
+    # streams while the user holds the PTT key/button. Useful in noisy
+    # rooms (booths, demos) where any auto-VAD would constantly false-
+    # trigger. Mutually exclusive with barge-in (PTT does its own
+    # bargein on key-down).
+    push_to_talk: bool = False
+
+
+@dataclass
 class LoggingConfig:
     level: str = "INFO"
     motion_csv_path: Optional[str] = None
@@ -162,6 +224,7 @@ class AppConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     motion: MotionConfig = field(default_factory=MotionConfig)
     bottango: BottangoConfig = field(default_factory=BottangoConfig)
+    realtime: RealtimeConfig = field(default_factory=RealtimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 

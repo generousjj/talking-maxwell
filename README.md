@@ -1,269 +1,133 @@
-# Maxwell Animatronic Chatbot Prototype
+# Maxwell — talking parrot animatronic
 
-A modular Python prototype that lets you talk to your Bottango-driven
-**Maxwell** animatronic parrot. The laptop is the AI brain; the ESP32 keeps
-its normal Bottango role as a servo driver.
+A Bottango-driven animatronic parrot that listens, talks, and moves in real time. Built for Stanford TEA. The bird (Maxwell) is the [Bottango Maxwell kit](https://www.bottango.com/) running custom firmware over USB-serial; the brain is a small Python web app on the laptop he's plugged into.
 
-## What it does
+There are two web pages once it's running:
 
-1. Listens via your laptop microphone (or accepts typed text).
-2. Transcribes speech (OpenAI Whisper by default).
-3. Generates a short parrot-style reply (OpenAI chat by default).
-4. Speaks the reply (OpenAI TTS by default, macOS `say` fallback available).
-5. Drives Maxwell's jaw/head/wing in real time while the reply plays, through
-   a pluggable motion backend (mock for development, Bottango for hardware).
+- [http://127.0.0.1:8787/admits](http://127.0.0.1:8787/admits) — the **end-user view**. Big round talk button, parrot-friendly colors, pick "Realtime" or "Take turns" and "Auto-listen" or "Push-to-talk". This is the one to point visitors at.
+- [http://127.0.0.1:8787/](http://127.0.0.1:8787/) — the **operator view**. Connect/End-Session buttons, every tuning knob exposed, raw log pane. This is for the person babysitting Maxwell at the booth.
 
-## Folder structure
+---
+
+## 🦜 Running Maxwell at an event (no Python knowledge needed)
+
+If you're the person at the booth and you just want to plug Maxwell in and have him work, this section is for you. **You only need to do steps 1–3 once per laptop.** After that, every event is just step 4.
+
+### What you need
+
+- A Mac laptop (the project also runs on Linux; Windows works but isn't bundled with the easy launcher).
+- The Maxwell kit's USB cable.
+- An OpenAI API key (it'll ask you the first time and remember it). Get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+- AirPods / a small Bluetooth speaker work, but built-in speakers are fine. The mic is whatever Mac mic is the system default.
+
+### Steps
+
+1. **Install Python 3.10 or newer.** macOS already has `python3` installed via the Command Line Tools. If you're not sure, open Terminal and run `python3 --version`. If it complains, install from [python.org/downloads](https://www.python.org/downloads/).
+
+2. **Get the project onto the laptop.** Either:
+   - Download the zip from GitHub: [github.com/generousjj/talking-maxwell](https://github.com/generousjj/talking-maxwell) → green "Code" button → "Download ZIP", then unzip it somewhere convenient like the Desktop. **OR**
+   - In Terminal: `git clone https://github.com/generousjj/talking-maxwell.git ~/Desktop/maxwell`
+
+3. **Plug Maxwell into the laptop with the USB cable.** Wait a few seconds — macOS will register the USB-serial device.
+
+4. **Start Maxwell.** In Finder, navigate to the project folder and **double-click `Start Maxwell.command`**. (The first time macOS may complain about an unidentified developer — Right-click → Open → "Open" in the dialog.)
+
+   The script will:
+   - Set up Python dependencies (only the first time, takes ~30 seconds)
+   - Ask you to paste your OpenAI key (only the first time)
+   - Detect Maxwell's USB port automatically
+   - Open the admits-friendly tab in your browser
+   - Start the server
+
+   When you see `Maxwell web UI on http://127.0.0.1:8787` in the Terminal window, he's ready.
+
+5. **Hand visitors the admits tab** (`/admits`). Have it open on a tablet or another browser window.
+
+6. **When you're done:** click **End session** in the operator view (or hit Ctrl-C in the Terminal window). End session will gently center all servos before cutting power so nothing is left straining.
+
+### Troubleshooting at the booth
+
+- **Maxwell's beak doesn't move during speech.** The jaw servo's GPIO 9 line is finicky. Try:
+   1. Click **Full reset** in the operator view (deregisters + re-registers all servos and "hammers" the jaw line to wake it up).
+   2. If still nothing, physically unplug-and-replug the small jumper on pin 9 of the ESP32, then click **Full reset** again.
+- **Mic keeps mistaking room noise for speech.** Open the operator view → realtime row → "Mic sensitivity" panel → switch to **Push-to-talk**, OR raise the threshold / silence-duration sliders.
+- **Maxwell "hears himself" and won't stop talking.** The "Echo guard" toggle should already be on. If it's not, turn it on. If it is and he's still self-looping, the speakers are too close to the mic — move them, or use Push-to-talk.
+- **The page won't load.** Make sure the Terminal window is still open and shows `Maxwell web UI on http://127.0.0.1:8787`. If it crashed, just double-click `Start Maxwell.command` again.
+- **Want a public URL** so admits can chat from their phones? Easiest tunnel: `cloudflared tunnel --url http://localhost:8787` from a second Terminal window. They'll get a `*.trycloudflare.com` URL pointing at your laptop. The mic + speaker are still the laptop's, but visitors can type and Maxwell will speak it aloud at the booth.
+
+---
+
+## For developers
+
+### Project layout
 
 ```
-maxwell_parrot_bot/
-├── app/
-│   ├── cli.py              # argparse CLI entry point
-│   ├── config.py           # YAML + .env config loader
-│   ├── main.py             # alias entry point
-│   └── pipeline.py         # typed + live conversation pipelines
-├── conversation/
-│   ├── audio.py            # playback + mic + WAV helpers
-│   ├── stt.py              # STTProvider + OpenAI Whisper + stub
-│   ├── llm.py              # LLMProvider + OpenAI + offline stub
-│   └── tts.py              # TTSProvider + OpenAI + macOS say + sine stub
-├── motion/
-│   ├── behavior_engine.py  # deterministic jaw/head/wing heuristics
-│   ├── envelope.py         # RMS envelope follower w/ attack-release
-│   ├── models.py           # dataclasses + normalized MotionFrame
-│   ├── scheduler.py        # ~30 Hz motion scheduler
-│   └── state_machine.py    # IDLE/LISTENING/THINKING/SPEAKING
-├── transport/
-│   ├── base.py                     # MotionBackend ABC
-│   ├── bottango_protocol.py        # Bottango wire protocol + hash
-│   ├── bottango_serial_backend.py  # direct USB-serial to ESP32 (default)
-│   ├── bottango_backend.py         # legacy HTTP client for Bottango desktop
-│   └── mock_backend.py             # console/CSV/matplotlib backend
-├── tests/                  # pytest unit tests
-├── config.example.yaml
-├── .env.example
-├── requirements.txt
-└── README.md
+app/             entry points: webapp.py, cli.py, pipeline.py, config.py
+conversation/    STT, LLM, TTS providers + Realtime API session
+motion/          envelope follower, behavior engine, state machine, models
+transport/       Bottango serial backend (talks raw protocol to ESP32)
+tests/           pytest unit tests
+config.yaml      live tuning (committed; edit on the booth machine if needed)
+config.example.yaml   template / annotated source-of-truth defaults
 ```
 
-The Bottango project file (`*.btngo`) and its associated media assets that live
-**outside** this folder (in the parent `/Users/judestjohn`) are treated as
-**read-only reference material** for this prototype. Nothing in this project
-reads, writes, renames, or otherwise modifies them; their role is only to
-document Maxwell's control names and servo ranges for our human reference.
-
-## Install
-
-Requires Python **3.11+**. Python 3.13 works too.
+### Setup (manual)
 
 ```bash
-cd /Users/judestjohn/maxwell_parrot_bot
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp config.example.yaml config.yaml
-cp .env.example .env          # then edit and set OPENAI_API_KEY
+echo "OPENAI_API_KEY=sk-..." > .env
+python -m app.webapp --backend bottango      # real hardware
+python -m app.webapp --backend mock           # logs motion only
 ```
 
-## Running
-
-### Web UI (easiest — type a script, click Run)
+### Tests
 
 ```bash
-python -m app.webapp --backend bottango_serial --config config.example.yaml
-# then open http://localhost:8787
+python -m pytest -q
 ```
 
-The web UI keeps a single pipeline alive across requests, so the 2-3 second
-serial handshake only happens once at startup. Features:
+30-ish unit tests cover the envelope follower, behavior engine, state machine, realtime event parsing, and config loading. They run in <2 s with no hardware required.
 
-- textarea + **Speak** button — type anything, Maxwell says it
-- **Replay test clip** button — plays `/tmp/maxwell_short.wav`
-- **Center servos** / **Stop** buttons
-- live jaw tuning (invert, gain, min/max PWM) without restart
-- rolling log pane
+### Configuration
 
-Add `--safe-providers` to use offline stub LLM + macOS `say` when you don't
-have `OPENAI_API_KEY` set.
+`config.example.yaml` is the source of truth for defaults; `config.yaml` overrides per-booth. The dataclass-walker auto-loads any field defined on `AppConfig`, so adding a new tunable means: define it on the dataclass with a default → it's instantly readable from YAML, no glue code.
 
-### Mock mode (works immediately, no API keys required)
+Notable config sections:
 
-```bash
-python -m app.cli --mode typed --backend mock --safe-providers \
-  --text "Hey Maxwell, how are you?"
+- `personality` — system prompt for the LLM. Maxwell is the Stanford TEA mascot, English-only, warm + funny.
+- `motion.jaw` — envelope-follower shaping (floor, ceiling, gain, attack, release, peak hold). Currently restored to the post-invert-fix baseline (gain=1.6, floor=0.08, ceiling=0.90).
+- `motion.behavior` — magnitudes for head bobs, wing flaps, idle motion (continuous sine waves on non-harmonic periods).
+- `bottango.serial` — port, baud, per-channel servo PWM ranges + invert flag, slew limits.
+- `realtime` — OpenAI Realtime API tuning (voice, VAD threshold/silence, far/near-field noise reduction, half-duplex echo guard, smart barge-in, push-to-talk).
+
+### Architecture, briefly
+
+```
+mic → STT/Realtime → LLM → TTS/Realtime audio
+                              ↓
+                       EnvelopeFollower (RMS → jaw target)
+                              ↓
+                  ConversationStateMachine (idle/listen/think/speak)
+                              ↓
+                  BehaviorEngine (heuristic head/wing motion)
+                              ↓
+                  MotionScheduler (30 Hz fixed-rate)
+                              ↓
+                  BottangoSerialBackend (sCI/sC commands → USB)
+                              ↓
+                          ESP32 → servos
 ```
 
-You'll see motion frames printed to the console and, if you pass `--plot`, a
-matplotlib plot of jaw / head_lr / head_ud / wing when the session exits.
+Realtime mode replaces the STT→LLM→TTS triplet with a single OpenAI Realtime websocket session, while still feeding the playback audio's RMS into the same envelope follower so the jaw stays in sync with what the speaker is actually saying.
 
-```bash
-python -m app.cli --mode typed --backend mock --csv motion.csv --plot
-```
+### Notes & quirks
 
-### Typed-text mode (Priority 1)
+- Jaw servo (GPIO 9) is unreliable on long extension wires. The "Full reset" button + a "Pre-warm jaw" toggle exist to work around it.
+- Everything is fire-and-forget on the serial line: we don't wait for the firmware's `OK` per command, with per-channel coalescing and `min_delta_for_send` filtering to avoid drowning the line.
+- Half-duplex echo guard mutes the mic while Maxwell is speaking; smart barge-in monitors local mic RMS and un-mutes (cancelling the in-flight response) when the user is clearly louder than the speaker leakage for ~150 ms.
 
-```bash
-python -m app.cli --mode typed --backend mock
-# then type a line, press enter, Maxwell replies and "moves"
-```
+---
 
-Drop `--safe-providers` and set `OPENAI_API_KEY` in `.env` to get real OpenAI
-replies and voice.
-
-### Live conversation mode (Priority 2)
-
-```bash
-python -m app.cli --mode live --backend mock
-```
-
-This uses the laptop mic with a simple energy-threshold VAD. Settings live
-under `audio:` in `config.yaml`. If you don't want OpenAI Whisper, set
-`providers.stt: stub` (you'll need typed mode) or swap in a different STT.
-
-### Replay / demo mode
-
-Drive motion from a pre-recorded WAV file without involving the chatbot:
-
-```bash
-python -m app.cli --mode replay --wav some_audio.wav --backend mock --plot
-```
-
-## Bottango hardware setup
-
-The default hardware path is the **serial backend**, which talks Bottango's
-Arduino Driver protocol (API version 8) **directly to the ESP32 over USB**.
-That means:
-
-- **No Bottango Desktop app is required.** Close it if it's open; it will
-  hold the serial port.
-- **No `controlSchemes`, API-controlled inputs, or live-mode routing** to
-  configure inside Bottango's GUI. We register the four servos ourselves on
-  connect using the PWM ranges from `config.yaml`.
-- The only Bottango step that's still required is the one you've already
-  done: flash **BottangoArduinoDriver** to the ESP32 using Bottango Desktop.
-
-### Prerequisites
-
-1. ESP32 already has `BottangoArduinoDriver` uploaded (driver version
-   `0.7.0a1` or compatible — we use the `CUSTOM8` handshake so minor driver
-   version drift is fine).
-2. ESP32 is plugged in over USB (shows up as a `CP2102`/`CH340`/`FTDI`
-   serial device).
-3. `pyserial` installed via `requirements.txt`.
-
-### Run it
-
-```bash
-# Close Bottango Desktop first if it's open (it will hold the serial port).
-python -m app.cli --mode replay --wav some_audio.wav --backend bottango_serial
-# or
-python -m app.cli --mode typed  --backend bottango_serial
-python -m app.cli --mode live   --backend bottango_serial
-```
-
-The app will auto-detect the ESP32's serial port, perform the handshake,
-register the four servos using the values in
-`bottango.serial.{jaw,head_lr,head_ud,wing}`, and start streaming motion.
-
-### Safety rails (enforced by firmware)
-
-The PWM ranges in `config.yaml` are enforced **by the firmware itself** once
-registered. Even if a bug in the behavior engine asks for a larger motion,
-Bottango's `PinServoEffector` clamps to `min_pwm..max_pwm` and caps slew
-rate at `max_pwm_per_sec`. Defaults match the Maxwell reference project:
-
-| Channel  | Pin | PWM range     | Max μs/sec |
-| -------- | --- | ------------- | ---------- |
-| jaw      | 9   | 1450 – 1700   | 3000       |
-| head_lr  | 5   | 1275 – 1725   | 1800       |
-| head_ud  | 6   | 850 – 2100    | 1800       |
-| wing     | 3   | 1500 – 2000   | 3000       |
-
-Tighten any of these in `config.yaml` before first power-on if you want even
-more conservative first movements.
-
-### Troubleshooting
-
-- **"Could not locate a Bottango-compatible serial device"** — plug the ESP32
-  in, or pass `--serial-port /dev/cu.usbserial-0001`.
-- **Port open fails with a permission or busy error** — Bottango Desktop is
-  almost certainly still connected; close it (or use the "Disconnect Driver"
-  button in the Bottango Desktop hardware panel).
-- **Timed out waiting for OK after `hRQ,...`** — the firmware is in an odd
-  state. Unplug/replug the ESP32 and retry. You can also run the tiny smoke
-  test to isolate the problem: `python tools/smoke_test_hardware.py`.
-- **`HASH_FAIL`** — shouldn't happen (we compute and include the Bottango
-  sum-of-ASCII hash on every command), but if it does, open an issue with
-  the exact command from the debug log.
-
-### Audio output (playback)
-
-Audio plays out of the **laptop speakers**, not the Arduino/ESP32. The
-default in `config.example.yaml` explicitly selects
-`"MacBook Pro Speakers"` so AirPods or other default devices don't steal
-the audio. Override with `--playback-device "<name or index>"` or
-`audio.playback_device` in `config.yaml`.
-
-### Legacy HTTP backend (rare)
-
-A `--backend bottango_http` option exists for Bottango builds that expose an
-HTTP REST API matching `bottango.path_template`. Most builds expose the live
-API over WebSocket instead, so this path is only useful if you've installed
-a matching plugin. Use the serial backend unless you have a specific reason
-not to.
-
-## Configuration surface
-
-See `config.example.yaml` for every tunable. Highlights:
-
-- `providers.*` — pick OpenAI / stub / macOS `say` / sine stub per leg.
-- `motion.rate_hz` — motion update rate (default 30).
-- `motion.jaw.*` — envelope floor / ceiling / attack / release / noise floor /
-  peak-hold / gain — all the knobs that shape the jaw.
-- `motion.behavior.*` — drift magnitudes, nod strength, wing cooldown, etc.
-- `audio.*` — mic device, playback device (defaults to MacBook Pro Speakers),
-  sample rate, VAD threshold + hangover.
-- `bottango.transport` — `serial` (default, direct USB to ESP32) or `http`.
-- `bottango.serial.{jaw,head_lr,head_ud,wing}` — per-channel PWM safety
-  ranges that the firmware enforces.
-- `logging.motion_csv_path` / `logging.plot_after` — offline inspection hooks.
-
-## What parts are placeholders
-
-- `LocalStubSTT` simply errors out — wire up OpenAI Whisper (or any other
-  STT) when you want live-mic mode without the default provider.
-- `SineStubTTS` is a deliberate low-quality fallback so the motion pipeline
-  works on machines without OpenAI / `say`.
-- Phrase boundaries are estimated from punctuation and elapsed playback time
-  — we don't yet consume provider-supplied word timings.
-
-## Known limitations
-
-- The VAD is a plain energy threshold; noisy rooms may need a higher
-  `vad_threshold` or push-to-talk (not yet implemented).
-- Serial backend assumes the ESP32 runs `BottangoArduinoDriver` v0.7.x or
-  later (API version 8). Older firmware used `COMPRESSED_SIGNAL_MAX=1000`
-  instead of `8192`; set `bottango.serial.compressed_signal_max: 1000` if
-  needed.
-- No interruption handling yet (you can't cut off the parrot mid-reply).
-- Latency is dominated by OpenAI API round-trips when cloud providers are
-  enabled.
-
-## Next improvements (not in this pass)
-
-- Push-to-talk and better VAD (e.g. `webrtcvad`).
-- Interruption cancellation (cancel TTS + motion mid-utterance).
-- Vowel-bias jaw modulation using phoneme hints.
-- Singing/music demo mode that consumes WAV + optional score.
-- Provider-side timing data (e.g. OpenAI TTS word timings) for precise
-  phrase-boundary nods.
-- Simple GUI (only if you actually want it — CLI is first-class).
-
-## Running the tests
-
-```bash
-python -m pytest tests/
-```
-
-All tests run offline; they exercise the envelope follower, behavior engine,
-and motion frame invariants.
+Built quickly, intentionally — Codex helped throughout. PRs welcome.

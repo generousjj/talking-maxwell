@@ -164,16 +164,47 @@ class BehaviorGains:
     while speaking. Higher = more restless head motion."""
     waiting_wing_period_s: float = 2.16
     """Seconds per wing flap-cycle while waiting (IDLE / LISTENING /
-    THINKING). Head stays still so mic recording isn't polluted by servo
-    noise, but a periodic wing flap keeps Maxwell looking alive. With the
-    default duty of 0.52 this is a ~1.12s flap and a ~1.04s rest."""
+    THINKING). The flap is shaped as a raised-cosine pulse over the
+    full period, so the wing eases into and out of each flap smoothly
+    instead of snapping between rest and motion."""
     waiting_wing_strength: float = 0.55
     """Peak amplitude of the waiting flap. Lower than the full excited
     SPEAKING flap (wing_strength) so it reads as a "wiggle" rather than a
     big emphasis gesture."""
-    waiting_wing_duty: float = 0.52
-    """Fraction of each wing period spent actively flapping (rest of the
-    period the wing sits at zero). Raised from 0.35 so the gap between
-    flaps is roughly half what it used to be — Maxwell feels much more
-    alive without the servo buzzing continuously."""
+    waiting_wing_duty: float = 1.0
+    """Reserved for backward-compatibility with old configs. The current
+    waiting flap uses a continuous raised-cosine shape over the full
+    period (no flat rest gap) so this value is effectively unused —
+    leave at 1.0 unless you re-enable the old gated-flap shape."""
+
+    # ---- Idle head motion ----
+    # Slow continuous sines on head_ud (nod) and head_lr (tilt) so the
+    # head is always *gently* moving while Maxwell waits — no flat
+    # holds, no abrupt starts. Periods are intentionally not harmonics
+    # of the wing period (or each other) so the combined head + wing
+    # motion never repeats exactly. Idle motion is still gated off in
+    # LISTENING / THINKING so head-servo chatter can't pollute mic
+    # recording during user speech.
+    idle_nod_strength: float = 0.12
+    """Peak head_ud excursion of the idle nod sine, as a fraction of
+    full travel below center. 0.12 = head bobs to about 0.38 at peak."""
+    idle_tilt_strength: float = 0.08
+    """Peak head_lr excursion of the idle tilt sine, as a fraction of
+    full travel away from center."""
+    idle_nod_period_s: float = 3.7
+    """Period of the head_ud nod sine (seconds). Slower than the wing
+    period so the two motions read as independent layers."""
+    idle_tilt_period_s: float = 5.1
+    """Period of the head_lr tilt sine (seconds). Coprime-ish with the
+    nod and wing periods so the overall idle motion never repeats
+    exactly."""
+
+    head_smoothing_tau_s: float = 0.18
+    """Output-side lowpass time constant on head_lr / head_ud, in seconds.
+    The behavior engine sums several head terms (drift, nod, envelope-bob,
+    emphasis bump) that can each step instantly between scheduler ticks
+    — the emphasis bump in particular snaps on/off when envelope crosses
+    its threshold, which reads as a sharp twitch on the physical servo.
+    Smoothing the final value with a ~180ms tau preserves expressive
+    motion while killing the per-tick choppiness. Set to 0 to disable."""
     seed: Optional[int] = None

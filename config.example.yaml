@@ -12,8 +12,9 @@ personality: |
   genuinely helpful conversationalist — you can talk about anything,
   not just the club. Give real, thoughtful answers; do not dumb things
   down or pretend to be a literal-minded bird. Keep replies to one or
-  two short sentences so the conversation flows. You can respond in any
-  language the user speaks to you in.
+  two short sentences so the conversation flows. Always reply in
+  English, even if the user speaks to you in another language — if
+  they do, gently respond in English anyway.
 
   Do NOT say the written word "squawk", "polly", or any onomatopoeia in
   your replies — text-to-speech reads those literally as English words
@@ -173,6 +174,42 @@ bottango:
   head_lr_identifier: "head_lr_api"
   head_ud_identifier: "head_ud_api"
   wing_identifier: "wing_api"
+
+# OpenAI Realtime API mode. Toggle from the web UI's "Start realtime
+# mode" button. ``instructions`` is the system prompt the realtime voice
+# uses; if blank we fall back to the top-level ``personality`` above so
+# both modes feel like the same Maxwell.
+realtime:
+  enabled: true
+  model: gpt-realtime
+  voice: ballad
+  instructions: ""
+  # VAD + noise-reduction tuning. Defaults are friendly to a laptop
+  # mic in a noisy room (events, fairs). Tighten threshold + silence
+  # if Maxwell still triggers on background chatter.
+  vad_type: server_vad          # server_vad | semantic_vad
+  vad_threshold: 0.7            # 0..1, higher = needs louder voice
+  vad_prefix_padding_ms: 300
+  vad_silence_duration_ms: 700  # how long of a pause ends a turn
+  vad_eagerness: low            # only used with semantic_vad
+  noise_reduction: far_field    # off | near_field | far_field
+  # Half-duplex echo guard: stop forwarding mic frames to OpenAI while
+  # Maxwell is speaking, so he can't hear himself loop back through the
+  # speaker. Disable only if mic + speaker are isolated (e.g. headset).
+  half_duplex: true
+  playback_tail_ms: 400         # how long to keep mic muted after his last syllable
+  # Smart barge-in: while muted, watch mic RMS; if user clearly speaks
+  # over the playback (louder than absolute threshold AND louder than
+  # ambient * factor for min_frames consecutive 40 ms chunks), un-mute
+  # and cancel the in-flight server response so they can interrupt.
+  barge_in_enabled: true
+  barge_in_rms_threshold: 0.06    # absolute "user is talking" floor
+  barge_in_above_ambient_factor: 5.0  # raise if echo bleed false-triggers
+  barge_in_min_frames: 4          # 4 * 40ms = 160ms confirmation window
+  # Push-to-talk: when true, server VAD is disabled and the mic only
+  # streams while the user holds a key/button. Toggleable live from
+  # the UI, applied without dropping the websocket.
+  push_to_talk: false
 
 logging:
   level: INFO
