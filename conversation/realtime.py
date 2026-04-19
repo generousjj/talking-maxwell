@@ -65,6 +65,35 @@ OUTPUT_BLOCK_MS = 40
 block size so the playback callback stays steady."""
 
 
+def _resample_float(arr: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+    """Linearly resample a 1-D float audio buffer.
+
+    Quality-good-enough for speech in both directions (24 kHz <-> 48 kHz
+    is the common case here). Avoids a scipy dependency. Returns
+    a fresh float32 array.
+    """
+    if src_sr == dst_sr or arr.size == 0:
+        return arr.astype(np.float32, copy=False)
+    n_in = arr.size
+    n_out = max(1, int(round(n_in * dst_sr / src_sr)))
+    xp = np.linspace(0.0, 1.0, num=n_in, endpoint=False, dtype=np.float64)
+    x = np.linspace(0.0, 1.0, num=n_out, endpoint=False, dtype=np.float64)
+    return np.interp(x, xp, arr.astype(np.float64)).astype(np.float32)
+
+
+def _resample_int16_bytes(data: bytes, src_sr: int, dst_sr: int) -> bytes:
+    """Resample a raw PCM16 mono buffer (bytes) between two rates.
+
+    Used in the mic callback to convert the device's native rate to
+    OpenAI's expected 24 kHz. Linear interp; sufficient for speech.
+    """
+    if src_sr == dst_sr or not data:
+        return data
+    arr = np.frombuffer(data, dtype=np.int16)
+    out = _resample_float(arr.astype(np.float32), src_sr, dst_sr)
+    return np.clip(out, -32768.0, 32767.0).astype(np.int16).tobytes()
+
+
 # ----------------------------------------------------------------------
 # Event-shape helpers
 #
@@ -215,6 +244,13 @@ class RealtimeSession:
     _input_stream: Optional["sd.RawInputStream"] = field(default=None, init=False)
     _output_stream: Optional["sd.RawOutputStream"] = field(default=None, init=False)
     _output_queue: Optional[asyncio.Queue] = field(default=None, init=False)
+    # Native sample rates of the actually-opened sounddevice streams.
+    # Some macOS inputs (built-in mic, AirPods) reject 24 kHz directly
+    # via PortAudio (CoreAudio AUHAL returns -10851), so we fall back
+    # to the device's native rate and resample on the fly to/from the
+    # 24 kHz the OpenAI Realtime API expects.
+    _mic_sample_rate: int = field(default=REALTIME_SAMPLE_RATE, init=False)
+    _output_sample_rate: int = field(default=REALTIME_SAMPLE_RATE, init=False)
     _tasks: list[asyncio.Task] = field(default_factory=list, init=False)
     _running: bool = field(default=False, init=False)
     _stop_evt: Optional[asyncio.Event] = field(default=None, init=False)
@@ -391,42 +427,111 @@ class RealtimeSession:
 
     # ------------------------- internals -------------------------
 
+    def _device_default_sr(self, device, kind: str) -> int:
+        """Best-effort native sample rate for a sounddevice device."""
+        try:
+            info = sd.query_devices(device, kind)
+            sr = int(round(float(info.get("default_samplerate") or 0)))
+            if sr > 0:
+                return sr
+        except Exception:  # noqa: BLE001
+            log.debug("realtime: query_devices(%s, %s) failed", device, kind, exc_info=True)
+        # Sensible macOS fallback (built-in mic + AirPods both run 48k).
+        return 48_000
+
     def _open_audio_streams(self) -> None:
-        block_in = int(REALTIME_SAMPLE_RATE * INPUT_BLOCK_MS / 1000)
-        block_out = int(REALTIME_SAMPLE_RATE * OUTPUT_BLOCK_MS / 1000)
         loop = asyncio.get_running_loop()
         mic_q: asyncio.Queue = asyncio.Queue(maxsize=64)
 
         def _mic_cb(indata, frame_count, time_info, status):  # type: ignore[override]
             if status:
                 log.debug("realtime mic status: %s", status)
+            data = bytes(indata)
+            if self._mic_sample_rate != REALTIME_SAMPLE_RATE:
+                # Resample int16 PCM block from native to 24 kHz before
+                # the OpenAI websocket sees it. Keep this branch tight —
+                # _mic_cb runs on PortAudio's RT thread.
+                data = _resample_int16_bytes(
+                    data, self._mic_sample_rate, REALTIME_SAMPLE_RATE
+                )
             try:
-                loop.call_soon_threadsafe(mic_q.put_nowait, bytes(indata))
+                loop.call_soon_threadsafe(mic_q.put_nowait, data)
             except asyncio.QueueFull:
                 pass
 
-        self._input_stream = sd.RawInputStream(
-            samplerate=REALTIME_SAMPLE_RATE,
-            channels=1,
-            dtype="int16",
-            blocksize=block_in,
-            device=self.input_device,
-            callback=_mic_cb,
-        )
+        # ---------- input ----------
+        self._mic_sample_rate = REALTIME_SAMPLE_RATE
+        try:
+            block_in = int(REALTIME_SAMPLE_RATE * INPUT_BLOCK_MS / 1000)
+            self._input_stream = sd.RawInputStream(
+                samplerate=REALTIME_SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=block_in,
+                device=self.input_device,
+                callback=_mic_cb,
+            )
+        except sd.PortAudioError as exc:
+            native_sr = self._device_default_sr(self.input_device, "input")
+            log.warning(
+                "realtime: input @ %d Hz failed (%s); falling back to "
+                "native %d Hz with on-the-fly resampling",
+                REALTIME_SAMPLE_RATE, exc, native_sr,
+            )
+            self._mic_sample_rate = native_sr
+            block_in = int(native_sr * INPUT_BLOCK_MS / 1000)
+            self._input_stream = sd.RawInputStream(
+                samplerate=native_sr,
+                channels=1,
+                dtype="int16",
+                blocksize=block_in,
+                device=self.input_device,
+                callback=_mic_cb,
+            )
         self._mic_q = mic_q  # type: ignore[attr-defined]
         self._input_stream.start()
 
+        # ---------- output ----------
         # Output stream: pulled from ``self._output_queue`` by the
         # ``_playback_loop`` task, written to a RawOutputStream in
         # blocking mode (the SDK gives us small chunks, not callbacks).
-        self._output_stream = sd.RawOutputStream(
-            samplerate=REALTIME_SAMPLE_RATE,
-            channels=1,
-            dtype="int16",
-            blocksize=block_out,
-            device=self.output_device,
-        )
+        self._output_sample_rate = REALTIME_SAMPLE_RATE
+        try:
+            block_out = int(REALTIME_SAMPLE_RATE * OUTPUT_BLOCK_MS / 1000)
+            self._output_stream = sd.RawOutputStream(
+                samplerate=REALTIME_SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=block_out,
+                device=self.output_device,
+            )
+        except sd.PortAudioError as exc:
+            native_sr = self._device_default_sr(self.output_device, "output")
+            log.warning(
+                "realtime: output @ %d Hz failed (%s); falling back to "
+                "native %d Hz with on-the-fly resampling",
+                REALTIME_SAMPLE_RATE, exc, native_sr,
+            )
+            self._output_sample_rate = native_sr
+            block_out = int(native_sr * OUTPUT_BLOCK_MS / 1000)
+            self._output_stream = sd.RawOutputStream(
+                samplerate=native_sr,
+                channels=1,
+                dtype="int16",
+                blocksize=block_out,
+                device=self.output_device,
+            )
         self._output_stream.start()
+        if (
+            self._mic_sample_rate != REALTIME_SAMPLE_RATE
+            or self._output_sample_rate != REALTIME_SAMPLE_RATE
+        ):
+            log.info(
+                "realtime: audio rates — mic=%d Hz, out=%d Hz, wire=%d Hz",
+                self._mic_sample_rate,
+                self._output_sample_rate,
+                REALTIME_SAMPLE_RATE,
+            )
 
     def _close_audio_streams(self) -> None:
         for stream in (self._input_stream, self._output_stream):
@@ -871,7 +976,17 @@ class RealtimeSession:
                     )
                 except asyncio.TimeoutError:
                     continue
-                pcm16 = np.clip(samples * 32768.0, -32768, 32767).astype(np.int16)
+                if self._output_sample_rate != REALTIME_SAMPLE_RATE:
+                    # Upsample 24 kHz float -> device native rate
+                    # (typically 48 kHz on macOS) before handing to
+                    # PortAudio. Linear interp is plenty for speech and
+                    # cheaper than scipy.
+                    samples_to_write = _resample_float(
+                        samples, REALTIME_SAMPLE_RATE, self._output_sample_rate
+                    )
+                else:
+                    samples_to_write = samples
+                pcm16 = np.clip(samples_to_write * 32768.0, -32768, 32767).astype(np.int16)
                 try:
                     await asyncio.to_thread(
                         self._output_stream.write, pcm16.tobytes()
