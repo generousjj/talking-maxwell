@@ -849,12 +849,15 @@ ADMITS_HTML = """<!doctype html>
     border: 3px solid var(--maxwell-blue);
   }
   .mascot {
-    width: 64px; height: 64px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--maxwell-blue) 0%, var(--maxwell-purple) 100%);
+    width: 72px; height: 72px;
+    flex: 0 0 auto;
     display: flex; align-items: center; justify-content: center;
-    font-size: 36px; line-height: 1;
-    box-shadow: inset -4px -4px 0 rgba(0,0,0,.08);
+  }
+  .mascot img {
+    max-width: 100%; max-height: 100%;
+    width: auto; height: auto;
+    object-fit: contain;
+    display: block;
   }
   header h1 {
     font-family: 'Baloo 2', sans-serif;
@@ -1056,7 +1059,7 @@ ADMITS_HTML = """<!doctype html>
 <div class="frame">
 
 <header>
-  <div class="mascot" aria-hidden="true">🦜</div>
+  <div class="mascot"><img src="/static/maxwell.png" alt="Maxwell the parrot"></div>
   <div>
     <h1>Hi, I'm Maxwell!</h1>
     <div class="tag">Stanford TEA's resident parrot · come say hi</div>
@@ -2129,6 +2132,13 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
     app.router.add_post("/api/disconnect", api_disconnect)
     app.router.add_get("/api/connection/status", api_connection_status)
     app.router.add_post("/api/realtime/config", api_realtime_config)
+
+    # Static assets (Maxwell pic, etc.). Resolved relative to the
+    # repo root so it works whether the app was started from the repo
+    # root or via `python -m app.webapp`.
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.is_dir():
+        app.router.add_static("/static", str(static_dir), show_index=False)
 
     async def _on_cleanup(_app: web.Application) -> None:
         await state.shutdown()
