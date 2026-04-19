@@ -247,23 +247,30 @@ class BehaviorEngine:
         )
 
     def _listening(self, now: float, dt: float) -> BehaviorOutput:
-        # Hold head and jaw still while the mic is recording so servo
-        # chatter doesn't leak into the captured audio. Wings are far
-        # enough from the bird's mic path that a periodic flap is fine.
+        # Realtime mode parks here between turns, so this is by far the
+        # most-visible "waiting" state. Match _idle exactly: continuous
+        # raised-cosine wing flap + two independent slow head sines on
+        # non-harmonic periods so Maxwell never sits frozen waiting for
+        # the user to speak. (Turn-based STT captures are short enough
+        # that the slow head motion is acoustically irrelevant.)
+        head_lr_off, head_ud_off = self._idle_head_offsets(now)
         return BehaviorOutput(
             jaw_open=0.0,
-            head_lr=_clamp01(self._yaw_drift),
-            head_ud=_clamp01(self._pitch_drift),
+            head_lr=_clamp01(self._yaw_drift + head_lr_off),
+            head_ud=_clamp01(self._pitch_drift + head_ud_off),
             wing=_clamp01(self._waiting_wing(now)),
         )
 
     def _thinking(self, now: float, dt: float) -> BehaviorOutput:
-        # Thinking is usually brief; keep the same waiting flap going so
-        # there's no jarring wing stop just because STT/LLM is running.
+        # Thinking is usually brief; keep the full continuous-motion
+        # idle look so there's no visible "freeze" the moment the
+        # state machine flips from listening -> thinking before audio
+        # starts playing back.
+        head_lr_off, head_ud_off = self._idle_head_offsets(now)
         return BehaviorOutput(
             jaw_open=0.0,
-            head_lr=_clamp01(self._yaw_drift),
-            head_ud=_clamp01(self._pitch_drift),
+            head_lr=_clamp01(self._yaw_drift + head_lr_off),
+            head_ud=_clamp01(self._pitch_drift + head_ud_off),
             wing=_clamp01(self._waiting_wing(now)),
         )
 
