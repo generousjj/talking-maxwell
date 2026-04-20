@@ -8,7 +8,7 @@ pytest-aiohttp: Starlette's ``TestClient`` is synchronous.
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -20,6 +20,9 @@ import pytest
 PASSWORD = "correcthorsebatterystaple"
 RAW_API_KEY = "sk-test-NEVER-LEAK-ME-1234567890"
 EPHEMERAL_TOKEN = "ek_vercel_test_0001"
+
+ROOT = Path(__file__).resolve().parent.parent
+API_INDEX_PATH = ROOT / "api" / "index.py"
 
 
 fastapi = pytest.importorskip("fastapi")
@@ -50,10 +53,23 @@ def _install_env(monkeypatch) -> None:
 
 
 def _fresh_app():
-    # Force a reimport so module-level state (AUTH_CONFIG, OPENAI_API_KEY,
-    # LOGIN_LIMITER) picks up the monkeypatched env.
-    sys.modules.pop("api.index", None)
-    return importlib.import_module("api.index")
+    """Load api/index.py directly from disk as a one-off module.
+
+    We avoid ``import api.index`` because Vercel's Python runtime
+    refuses to detect ``api/index.py`` as a serverless function when
+    ``api/`` is a package (i.e. contains ``__init__.py``). So this
+    repo intentionally keeps ``api/`` un-packaged, and the test suite
+    loads the entrypoint via the importlib file-location API to
+    match.
+    """
+    sys.modules.pop("_api_index_test_module", None)
+    spec = importlib.util.spec_from_file_location(
+        "_api_index_test_module", str(API_INDEX_PATH)
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_api_index_test_module"] = mod
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
 
 
 @pytest.fixture
