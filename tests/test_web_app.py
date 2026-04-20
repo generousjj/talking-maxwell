@@ -91,6 +91,24 @@ async def test_index_redirects_when_unauthenticated():
 
 
 @_async
+async def test_admits_page_requires_auth_and_renders():
+    client, close = await _build_client_factory(RAW_API_KEY)()
+    try:
+        resp = await client.get("/admits", allow_redirects=False)
+        assert resp.status == 302
+        assert resp.headers["Location"] == "/login"
+
+        await client.post("/api/auth/login", json={"password": PASSWORD})
+        page = await client.get("/admits")
+        assert page.status == 200
+        body = await page.text()
+        assert "Talk to Maxwell" in body
+        assert "/static/web/js/admits.js" in body
+    finally:
+        await close()
+
+
+@_async
 async def test_api_returns_401_when_unauthenticated():
     client, close = await _build_client_factory(RAW_API_KEY)()
     try:
@@ -221,8 +239,10 @@ def test_frontend_assets_present():
     for name in (
         "login.html",
         "index.html",
+        "admits.html",
         "css/app.css",
         "js/app.js",
+        "js/admits.js",
         "js/auth.js",
         "js/serial.js",
         "js/bottango.js",

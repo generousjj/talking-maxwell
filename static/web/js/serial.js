@@ -59,15 +59,42 @@ export class WebSerialTransport {
 
   static isSupported() { return typeof navigator !== "undefined" && "serial" in navigator; }
 
+  // Open a previously-authorized port without prompting. Returns true
+  // on success, false if there's no remembered port (caller should
+  // fall back to `connect()` from a user gesture). Safe to call
+  // before any user interaction.
+  async tryAutoConnect() {
+    if (!WebSerialTransport.isSupported() || this._connected) return false;
+    let ports = [];
+    try { ports = await navigator.serial.getPorts(); } catch (_) { return false; }
+    if (!ports.length) return false;
+    try {
+      const port = ports[0];
+      await port.open({ baudRate: BAUD });
+      return this._finishConnect(port);
+    } catch (e) {
+      this.log(`auto-connect failed: ${e.message || e}`);
+      return false;
+    }
+  }
+
   async connect() {
     if (!WebSerialTransport.isSupported()) {
       throw new Error("Web Serial not supported in this browser");
     }
     if (this._connected) return;
 
+    // Try the previously-authorized port first so repeat connects
+    // don't re-pop the chooser dialog.
+    if (await this.tryAutoConnect()) return;
+
     // MUST be called from a user gesture.
     const port = await navigator.serial.requestPort({});
     await port.open({ baudRate: BAUD });
+    await this._finishConnect(port);
+  }
+
+  async _finishConnect(port) {
     this.port = port;
 
     this.writer = port.writable.getWriter();
@@ -96,6 +123,7 @@ export class WebSerialTransport {
         this._setState({ connected: false, phase: "disconnected" });
       });
     }
+    return true;
   }
 
   isConnected() { return this._connected; }

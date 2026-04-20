@@ -95,6 +95,24 @@ def test_index_redirects_when_unauthenticated(client):
     assert resp.headers["location"] == "/login"
 
 
+def test_admits_page_requires_auth_and_renders(client):
+    c, _ = client
+    # Unauthed: redirect to /login like every other non-public page.
+    resp = c.get("/admits", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/login"
+
+    # Authed: serves the cartoon-bubble admits HTML with the expected
+    # title and a script import for admits.js. If these go missing, the
+    # booth guest UI silently breaks, so we fail loudly here instead.
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    page = c.get("/admits")
+    assert page.status_code == 200
+    body = page.text
+    assert "Talk to Maxwell" in body
+    assert "/static/web/js/admits.js" in body
+
+
 def test_api_returns_401_when_unauthenticated(client):
     c, _ = client
     resp = c.post("/api/web/realtime/session", json={})
@@ -223,6 +241,38 @@ def test_motion_config_exposes_correct_pins(client):
     assert chans["jaw"]["pin"] == 9
     assert chans["jaw"]["inverted"] is True
     assert data["source"] == "config.yaml"
+
+
+def test_motion_config_exposes_full_behavior_gains(client):
+    # Every Python BehaviorGains field the JS engine executes must
+    # ship over the wire — missing any of them silently reverts the
+    # browser to baked-in JS defaults that drift from config.yaml.
+    c, _ = client
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    resp = c.get("/api/web/motion-config")
+    assert resp.status_code == 200
+    gains = resp.json()["gains"]
+    required = {
+        "headLrDrift", "headUdDrift",
+        "nodStrength", "emphasisStrength", "questionTilt",
+        "wingStrength", "wingCooldownS",
+        "waitingWingStrength", "waitingWingPeriodS",
+        "envelopeHeadBob", "speakingDriftRate",
+        "idleNodStrength", "idleTiltStrength",
+        "idleNodPeriodS", "idleTiltPeriodS",
+        "headSmoothingTauS",
+    }
+    missing = required - gains.keys()
+    assert not missing, f"motion-config is missing gains: {missing}"
+    # seed is allowed to be null, but the key must exist so the JS
+    # engine can wire its PRNG deterministically when set.
+    assert "seed" in gains
+    # startingPwm must be filled in even when config.yaml says null —
+    # otherwise the browser would register servos at PWM=0.
+    for name, ch in resp.json()["channels"].items():
+        assert "startingPwm" in ch and isinstance(ch["startingPwm"], int), (
+            f"channel {name} missing startingPwm midpoint fallback"
+        )
 
 
 def test_motion_config_gated_by_auth(client):

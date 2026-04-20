@@ -13,6 +13,7 @@
       <h1>Maxwell <span class="muted">· browser mode</span></h1>
     </div>
     <div class="top-actions">
+      <a href="/admits" class="pill" style="text-decoration:none;color:#8b5cf6;font-weight:700;">Guest view &rarr;</a>
       <span id="sessionHint" class="pill"></span>
       <button id="logoutBtn" class="ghost">Sign out</button>
     </div>
@@ -28,6 +29,24 @@
         <button id="centerBtn" class="ghost" disabled>Center</button>
         <button id="stopBtn" class="ghost" disabled>Safe stop</button>
         <label class="inline"><input type="checkbox" id="mockBtn"> Mock (no hardware)</label>
+      </div>
+      <div class="row gap wrap">
+        <label class="inline" title="Which ESP32 pin the jaw servo is wired to. Default comes from config.yaml.">
+          Jaw pin
+          <select id="jawPinSelect">
+            <option value="">Default</option>
+            <option value="3">3</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
+            <option value="13">13</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <input id="jawPinCustom" type="number" min="0" max="39" step="1" placeholder="pin" hidden style="width:5rem;">
+        </label>
       </div>
       <div id="serialStatus" class="status-row">
         <span class="dot" id="serialDot"></span>

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Talk to Maxwell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Maxwell's palette: blue body, purple wing, brown beak/legs */
+    --maxwell-blue:   #3b8edb;
+    --maxwell-blue-2: #2b6fb8;
+    --maxwell-purple: #8b5cf6;
+    --maxwell-purple-2: #6d3fd6;
+    --maxwell-brown:  #8b5e34;
+    --maxwell-brown-2: #5f3f1f;
+    --cream:          #fff8ef;
+    --bubble-you:     #ede9fe;
+    --bubble-you-text:#4c1d95;
+    --bubble-bird:    #dbeafe;
+    --bubble-bird-text:#1e3a8a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100vh;
+    font-family: 'Baloo 2', 'Fredoka', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(160deg, #f0f4ff 0%, #fef3ec 100%);
+    color: var(--maxwell-brown-2);
+  }
+  .frame { max-width: 720px; margin: 1.5rem auto 3rem; padding: 0 1rem; }
+  header {
+    display: flex; align-items: center; gap: 1rem;
+    padding: 1rem 1.25rem;
+    background: white;
+    border-radius: 28px;
+    box-shadow: 0 8px 24px rgba(59,142,219,.18);
+    border: 3px solid var(--maxwell-blue);
+  }
+  .mascot { width: 72px; height: 72px; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center; }
+  .mascot img { max-width: 100%; max-height: 100%; width: auto; height: auto;
+    object-fit: contain; display: block; }
+  header h1 {
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 800; font-size: 1.8rem; margin: 0;
+    color: var(--maxwell-blue-2); letter-spacing: -.5px;
+  }
+  header .tag { font-size: .95rem; color: var(--maxwell-brown); font-weight: 500; margin-top: 2px; }
+
+  .card {
+    background: white; border-radius: 28px;
+    padding: 1.25rem 1.5rem; margin-top: 1rem;
+    box-shadow: 0 6px 18px rgba(139,94,246,.10);
+    border: 2px solid #ede9fe;
+  }
+  .card h2 { font-weight: 700; font-size: 1.1rem; margin: 0 0 .75rem;
+    color: var(--maxwell-purple-2); }
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; }
+
+  .pill-group {
+    display: inline-flex; background: #f3f0ff;
+    border-radius: 999px; padding: 4px; gap: 2px;
+  }
+  .pill-group button {
+    border: none; background: transparent;
+    padding: .55rem 1.1rem;
+    font-family: inherit; font-size: 1rem; font-weight: 600;
+    border-radius: 999px; cursor: pointer;
+    color: var(--maxwell-purple-2);
+    transition: background .15s;
+  }
+  .pill-group button.active {
+    background: var(--maxwell-purple); color: white;
+    box-shadow: 0 3px 10px rgba(139,94,246,.35);
+  }
+  .pill-group button:disabled { opacity: .35; cursor: not-allowed; }
+
+  .talk-wrap {
+    display: flex; flex-direction: column;
+    align-items: center; gap: .5rem;
+    margin: 1rem 0 .5rem;
+  }
+  #talkBtn {
+    width: 200px; height: 200px;
+    border-radius: 50%;
+    border: 6px solid var(--maxwell-blue-2);
+    background: radial-gradient(circle at 30% 30%,
+      var(--maxwell-blue) 0%,
+      var(--maxwell-blue-2) 70%,
+      var(--maxwell-purple-2) 100%);
+    color: white;
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 800; font-size: 1.4rem;
+    cursor: pointer;
+    box-shadow:
+      0 12px 30px rgba(43,111,184,.4),
+      inset 0 -8px 0 rgba(0,0,0,.15);
+    transition: transform .1s, box-shadow .1s;
+    user-select: none; -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  #talkBtn:active, #talkBtn.held {
+    transform: translateY(4px);
+    box-shadow:
+      0 4px 12px rgba(43,111,184,.4),
+      inset 0 -2px 0 rgba(0,0,0,.15);
+    background: radial-gradient(circle at 30% 30%,
+      var(--maxwell-purple) 0%,
+      var(--maxwell-purple-2) 70%,
+      var(--maxwell-brown) 100%);
+  }
+  #talkBtn:disabled {
+    opacity: .55; cursor: not-allowed;
+    background: #cbd5e1; border-color: #94a3b8;
+  }
+  #talkHint {
+    font-size: 1rem; color: var(--maxwell-brown);
+    font-weight: 500; text-align: center; min-height: 1.4em;
+  }
+  #stopBtn, #connectBtn {
+    display: none;
+    background: white;
+    color: var(--maxwell-purple-2);
+    border: 2px solid var(--maxwell-purple);
+    border-radius: 999px;
+    padding: .55rem 1.4rem;
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 700; font-size: 1rem;
+    cursor: pointer;
+    box-shadow: 0 4px 10px rgba(94,66,153,.18);
+    transition: transform .08s, background .15s, color .15s;
+  }
+  #stopBtn:hover, #connectBtn:hover {
+    background: var(--maxwell-purple); color: white;
+  }
+  #stopBtn:active, #connectBtn:active { transform: translateY(2px); }
+  #stopBtn.visible, #connectBtn.visible { display: inline-block; }
+
+  #status {
+    text-align: center; font-weight: 600; font-size: 1rem;
+    margin-top: .25rem; color: var(--maxwell-purple-2);
+    min-height: 1.4em;
+  }
+  #status.live  { color: var(--maxwell-blue-2); }
+  #status.busy  { color: #c2410c; }
+  #status.error { color: #b91c1c; }
+
+  .chat {
+    display: flex; flex-direction: column; gap: .65rem;
+    max-height: 50vh; overflow-y: auto; padding: .5rem 0;
+  }
+  .bubble {
+    padding: .75rem 1.1rem; border-radius: 22px;
+    max-width: 85%; font-size: 1.05rem; line-height: 1.4;
+    font-weight: 500;
+    box-shadow: 0 2px 6px rgba(0,0,0,.05);
+  }
+  .bubble.you {
+    align-self: flex-end;
+    background: var(--bubble-you);
+    color: var(--bubble-you-text);
+    border-bottom-right-radius: 6px;
+  }
+  .bubble.bird {
+    align-self: flex-start;
+    background: var(--bubble-bird);
+    color: var(--bubble-bird-text);
+    border-bottom-left-radius: 6px;
+    border-left: 4px solid var(--maxwell-blue);
+  }
+  .bubble .who {
+    display: block; font-weight: 700; font-size: .8rem;
+    opacity: .7; margin-bottom: .15rem;
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .empty {
+    text-align: center; color: var(--maxwell-brown);
+    opacity: .6; padding: 1rem; font-size: .95rem;
+  }
+  footer {
+    text-align: center; margin-top: 1.25rem;
+    font-size: .85rem; color: var(--maxwell-brown); opacity: .65;
+  }
+  footer a { color: var(--maxwell-purple-2); text-decoration: none; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="frame">
+
+<header>
+  <div class="mascot"><img src="/static/maxwell.png" alt="Maxwell the parrot"></div>
+  <div>
+    <h1>Hi, I'm Maxwell!</h1>
+    <div class="tag">Stanford TEA's resident parrot · come say hi</div>
+  </div>
+</header>
+
+<section class="card">
+  <h2>How would you like to chat?</h2>
+  <div class="row">
+    <span style="font-weight:600;color:var(--maxwell-brown);min-width:5.5rem;">Mic</span>
+    <div class="pill-group" id="micGroup">
+      <button data-mic="auto" class="active">Auto-listen (interrupt)</button>
+      <button data-mic="ptt">Push-to-talk</button>
+    </div>
+  </div>
+  <p style="margin:.6rem 0 0;font-size:.9rem;color:var(--maxwell-brown);">
+    <b>Auto-listen</b> lets you talk anytime — Maxwell hears you the moment you
+    speak. Use <b>Push-to-talk</b> in noisy rooms (hold the button or the spacebar
+    to talk).
+  </p>
+</section>
+
+<section class="card">
+  <div class="talk-wrap">
+    <button id="talkBtn" disabled>Connecting…</button>
+    <div id="talkHint"></div>
+    <button id="connectBtn" type="button">Connect Maxwell</button>
+    <button id="stopBtn" type="button">End session</button>
+    <div id="status">Loading…</div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Conversation</h2>
+  <div id="chat" class="chat">
+    <div class="empty" id="emptyHint">Say hi to Maxwell to get started!</div>
+  </div>
+</section>
+
+<footer>
+  Built for Stanford TEA. <a href="/">Operator view</a>
+</footer>
+
+</div>
+
+<script type="module" src="/static/web/js/admits.js"></script>
+</body>
+</html>

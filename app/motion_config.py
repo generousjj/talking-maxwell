@@ -36,18 +36,37 @@ DEFAULT_CHANNELS: Dict[str, Dict[str, Any]] = {
     "wing":    {"pin": 3, "minPwm": 1500, "maxPwm": 2000, "maxPwmPerSec": 3000, "inverted": False},
 }
 
-DEFAULT_GAINS: Dict[str, float] = {
-    # Matches motion.behavior in config.yaml. camelCase in JS land.
-    "headLrDrift":           0.32,
-    "headUdDrift":           0.26,
-    "wingStrength":          0.69,  # waiting_wing_strength (idle flap)
-    "speakingWingStrength":  1.0,   # wing_strength (speaking flap)
-    "speakingBobStrength":   0.22,  # envelope_head_bob
-    "idleNodStrength":       0.30,  # idle_nod_strength (head_ud sine amp)
-    "idleTiltStrength":      0.20,  # idle_tilt_strength (head_lr sine amp)
-    "idleNodPeriodS":        3.7,
-    "idleTiltPeriodS":       5.1,
-    "idleWingPeriodS":       4.3,
+DEFAULT_GAINS: Dict[str, Any] = {
+    # Mirrors motion.BehaviorGains + motion.behavior overrides from
+    # config.yaml, translated to camelCase for JS. Every field in the
+    # Python dataclass is represented here so the browser engine can
+    # execute the same algorithm path-for-path (see behavior.js).
+    "headLrDrift":           0.32,   # head_lr_drift
+    "headUdDrift":           0.26,   # head_ud_drift
+    "nodStrength":           0.45,   # nod_strength (phrase-boundary nod)
+    "emphasisStrength":      0.26,   # emphasis_strength (loud-syllable bump)
+    "questionTilt":          0.32,   # question_tilt (head_lr tilt on ?)
+    "wingStrength":          1.0,    # wing_strength (speaking flap)
+    "wingCooldownS":         2.0,    # wing_cooldown_s
+    "waitingWingStrength":   0.69,   # waiting_wing_strength (idle flap)
+    "waitingWingPeriodS":    2.16,   # waiting_wing_period_s
+    "envelopeHeadBob":       0.22,   # envelope_head_bob
+    "speakingDriftRate":     0.8,    # speaking_drift_rate
+    "idleNodStrength":       0.30,   # idle_nod_strength
+    "idleTiltStrength":      0.20,   # idle_tilt_strength
+    "idleNodPeriodS":        3.7,    # idle_nod_period_s
+    "idleTiltPeriodS":       5.1,    # idle_tilt_period_s
+    "headSmoothingTauS":     0.08,   # head_smoothing_tau_s (output lowpass)
+    "seed":                  None,   # int for deterministic motion, null for random
+
+    # Legacy aliases (older JS builds read these names). Python has
+    # no separate "speakingWingStrength"/"speakingBobStrength"/
+    # "idleWingPeriodS" knobs — those were invented in the old JS port
+    # — so we mirror them from the canonical Python fields above to
+    # keep any still-cached browser bundles working during rollout.
+    "speakingWingStrength":  1.0,    # == wing_strength
+    "speakingBobStrength":   0.22,   # == envelope_head_bob
+    "idleWingPeriodS":       2.16,   # == waiting_wing_period_s
 }
 
 DEFAULT_JAW_CALIBRATION: Dict[str, float] = {
@@ -110,17 +129,49 @@ def load_motion_config(repo_root: Path) -> Dict[str, Any]:
         if "starting_pwm" in cfg and cfg["starting_pwm"] is not None:
             ch["startingPwm"] = _as_int(cfg["starting_pwm"], 1500)
 
-    # Behavior gains live under motion.behavior.
+    # Mirror transport/bottango_serial_backend.resolved_start: when
+    # startingPwm is missing or null, default to the midpoint of
+    # (minPwm, maxPwm). Prevents sending startingPwm=0 to the firmware,
+    # which would park servos at a bogus PWM before the first sCI.
+    for name, ch in channels.items():
+        if "startingPwm" not in ch or ch.get("startingPwm") is None:
+            try:
+                ch["startingPwm"] = int(round((ch["minPwm"] + ch["maxPwm"]) / 2))
+            except (TypeError, ValueError, KeyError):
+                ch["startingPwm"] = 1500
+
+    # Behavior gains live under motion.behavior. Every snake_case key
+    # in the yaml maps to a camelCase key in the JS-facing payload so
+    # the browser engine reads the same tuned values the Python engine
+    # reads. Both the canonical camelCase key and its legacy alias
+    # (for speaking wing/bob/period) are updated when present.
     beh = (raw.get("motion") or {}).get("behavior") or {}
-    _map_float(beh, "head_lr_drift",        gains, "headLrDrift")
-    _map_float(beh, "head_ud_drift",        gains, "headUdDrift")
-    _map_float(beh, "waiting_wing_strength", gains, "wingStrength")
-    _map_float(beh, "wing_strength",        gains, "speakingWingStrength")
-    _map_float(beh, "envelope_head_bob",    gains, "speakingBobStrength")
-    _map_float(beh, "idle_nod_strength",    gains, "idleNodStrength")
-    _map_float(beh, "idle_tilt_strength",   gains, "idleTiltStrength")
-    _map_float(beh, "idle_nod_period_s",    gains, "idleNodPeriodS")
-    _map_float(beh, "idle_tilt_period_s",   gains, "idleTiltPeriodS")
+    _map_float(beh, "head_lr_drift",         gains, "headLrDrift")
+    _map_float(beh, "head_ud_drift",         gains, "headUdDrift")
+    _map_float(beh, "nod_strength",          gains, "nodStrength")
+    _map_float(beh, "emphasis_strength",     gains, "emphasisStrength")
+    _map_float(beh, "question_tilt",         gains, "questionTilt")
+    _map_float(beh, "wing_strength",         gains, "wingStrength")
+    _map_float(beh, "wing_strength",         gains, "speakingWingStrength")
+    _map_float(beh, "wing_cooldown_s",       gains, "wingCooldownS")
+    _map_float(beh, "waiting_wing_strength", gains, "waitingWingStrength")
+    _map_float(beh, "waiting_wing_period_s", gains, "waitingWingPeriodS")
+    _map_float(beh, "waiting_wing_period_s", gains, "idleWingPeriodS")
+    _map_float(beh, "envelope_head_bob",     gains, "envelopeHeadBob")
+    _map_float(beh, "envelope_head_bob",     gains, "speakingBobStrength")
+    _map_float(beh, "speaking_drift_rate",   gains, "speakingDriftRate")
+    _map_float(beh, "idle_nod_strength",     gains, "idleNodStrength")
+    _map_float(beh, "idle_tilt_strength",    gains, "idleTiltStrength")
+    _map_float(beh, "idle_nod_period_s",     gains, "idleNodPeriodS")
+    _map_float(beh, "idle_tilt_period_s",    gains, "idleTiltPeriodS")
+    _map_float(beh, "head_smoothing_tau_s",  gains, "headSmoothingTauS")
+    # seed can be an int or null; preserve either explicitly.
+    if "seed" in beh:
+        seed_val = beh["seed"]
+        try:
+            gains["seed"] = int(seed_val) if seed_val is not None else None
+        except (TypeError, ValueError):
+            gains["seed"] = None
 
     # Jaw calibration lives under motion.jaw.
     jaw = (raw.get("motion") or {}).get("jaw") or {}

@@ -223,6 +223,13 @@ async def index_page(request: Request):
     return _serve_html("index.html")
 
 
+@app.get("/admits", response_class=HTMLResponse)
+async def admits_page(request: Request):
+    # End-user-facing cartoon UI. Same auth gate as the operator page;
+    # a booth host logs in once and hands the laptop to guests.
+    return _serve_html("admits.html")
+
+
 def _serve_html(name: str) -> Response:
     path = STATIC_WEB_ROOT / name
     if not path.is_file():

@@ -23,12 +23,18 @@ export class RealtimeSession {
   constructor({
     envelope,
     behavior,
+    speakingContext = null,
     log = () => {},
     onState = () => {},
     onTranscript = () => {},
   }) {
     this.envelope = envelope;
     this.behavior = behavior;
+    // Optional LiveSpeakingContext. When provided, every envelope tick
+    // pumps the same RMS into it so BehaviorEngine sees behavior
+    // envelope + emphasis + phrase_boundary + question_like/excited —
+    // matching the Python operator pipeline's behavior inputs.
+    this.speakingContext = speakingContext;
     this.log = log;
     this.onState = onState;
     this.onTranscript = onTranscript;
@@ -198,9 +204,18 @@ export class RealtimeSession {
     const t = msg.type || "";
     if (t === "response.audio_transcript.delta") {
       this._pendingAssistant += msg.delta || "";
+      // Feed assistant text into the speaking context so question_like
+      // / excited reflect the utterance in flight (same heuristic as
+      // the Python pipeline's analyze_text).
+      if (this.speakingContext && msg.delta) {
+        this.speakingContext.appendText(msg.delta);
+      }
     } else if (t === "response.audio_transcript.done") {
       const text = (msg.transcript || this._pendingAssistant || "").trim();
       if (text) this.onTranscript({ role: "assistant", text, final: true });
+      if (this.speakingContext) {
+        this.speakingContext.setUtterance({ text });
+      }
       this._pendingAssistant = "";
     } else if (t === "conversation.item.input_audio_transcription.completed") {
       const text = (msg.transcript || "").trim();
@@ -255,5 +270,7 @@ export class RealtimeSession {
     this.analyser.getFloatTimeDomainData(this._analysisBuf);
     const rms = rmsOf(this._analysisBuf);
     this.envelope.processRms(rms);
+    // Same RMS feeds the separate (higher-gain) behavior envelope.
+    if (this.speakingContext) this.speakingContext.updateFromRms(rms);
   }
 }

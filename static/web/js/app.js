@@ -10,6 +10,7 @@ import { BehaviorEngine, DEFAULT_GAINS } from "./behavior.js";
 import { MotionScheduler } from "./motion.js";
 import { RealtimeSession } from "./realtime.js";
 import { TypedSession } from "./typed.js";
+import { LiveSpeakingContext } from "./live_speaking_context.js";
 
 // ---- auth gate ----
 (async () => {
@@ -39,6 +40,10 @@ function appendBubble(role, text) {
 // ---- motion pipeline ----
 const envelope = new EnvelopeFollower(DEFAULT_JAW_CALIBRATION);
 const behavior = new BehaviorEngine({ envelope, gains: DEFAULT_GAINS });
+// LiveSpeakingContext tracks a higher-gain behavior envelope,
+// per-frame emphasis, and phrase-boundary onsets — same set of inputs
+// app/pipeline.py feeds the Python BehaviorEngine while speaking.
+const speakingCtx = new LiveSpeakingContext({ envelopeFollower: envelope });
 let transport = null;
 
 // Live motion config (pins/PWM ranges, behavior gains, jaw calibration)
@@ -63,6 +68,7 @@ const scheduler = new MotionScheduler({
   hz: 30,
   behavior,
   transport: null,
+  speakingContextProvider: () => speakingCtx.snapshot(performance.now() / 1000),
   onFrame: (f) => {
     const env = envelope.behaviorEnvelope;
     const envPct = Math.round(env * 100);
@@ -125,13 +131,26 @@ function setSessionState(s) {
 })();
 
 // ---- connect / disconnect ----
+function resolvedChannels() {
+  // Start from the server-provided map (falls back to transport-side
+  // defaults if motion-config hasn't loaded yet). If the operator
+  // picked a jaw-pin override, patch only the jaw pin here — PWM
+  // ranges / inversion / slew stay on whatever the server shipped.
+  const base = motionConfig && motionConfig.channels
+    ? JSON.parse(JSON.stringify(motionConfig.channels))
+    : null;
+  const override = getJawPinOverride();
+  if (override != null && base && base.jaw) {
+    base.jaw.pin = override;
+    log(`jaw pin override -> ${override}`);
+  }
+  return base || undefined;
+}
+
 $("connectBtn").addEventListener("click", async () => {
   try {
     const mock = $("mockBtn").checked;
-    // Pass the server-provided channel map through to the transport
-    // so pins / PWM ranges match config.yaml. Falls back to transport
-    // defaults if motion-config hasn't loaded yet.
-    const channels = (motionConfig && motionConfig.channels) || undefined;
+    const channels = resolvedChannels();
     transport = mock
       ? new MockTransport({ log, onState: setSerialState })
       : new WebSerialTransport({ log, onState: setSerialState, channels });
@@ -185,6 +204,8 @@ function savePrefs() {
       jawGain: $("jawGain").value,
       wingStrength: $("wingStrength").value,
       headDrift: $("headDrift").value,
+      jawPin: $("jawPinSelect").value,
+      jawPinCustom: $("jawPinCustom").value,
     }));
   } catch (_) {}
 }
@@ -199,8 +220,37 @@ function loadPrefs() {
     if (p.jawGain) { $("jawGain").value = p.jawGain; envelope.setCalibration({ gain: parseFloat(p.jawGain) }); }
     if (p.wingStrength) { $("wingStrength").value = p.wingStrength; behavior.updateGains({ wingStrength: parseFloat(p.wingStrength) }); }
     if (p.headDrift) { $("headDrift").value = p.headDrift; const v = parseFloat(p.headDrift); behavior.updateGains({ headLrDrift: v, headUdDrift: v * 0.7 }); }
+    if (p.jawPin != null) $("jawPinSelect").value = p.jawPin;
+    if (p.jawPinCustom != null) $("jawPinCustom").value = p.jawPinCustom;
+    applyJawPinVisibility();
   } catch (_) {}
 }
+
+// ---- jaw pin override ----
+// Lets the operator rewire the jaw servo to a different GPIO without
+// redeploying. Empty/"Default" == follow config.yaml; "custom" reads
+// from the adjacent number input. Override takes effect next connect.
+function applyJawPinVisibility() {
+  const sel = $("jawPinSelect");
+  const custom = $("jawPinCustom");
+  custom.hidden = sel.value !== "custom";
+}
+function getJawPinOverride() {
+  const v = $("jawPinSelect").value;
+  if (v === "") return null;
+  if (v === "custom") {
+    const n = parseInt($("jawPinCustom").value, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+$("jawPinSelect").addEventListener("change", () => {
+  applyJawPinVisibility();
+  savePrefs();
+});
+$("jawPinCustom").addEventListener("input", savePrefs);
+
 loadPrefs();
 ["voiceSelect", "modeSelect", "micMode", "jawGain", "wingStrength", "headDrift"].forEach(id =>
   $(id).addEventListener("change", savePrefs));
@@ -227,6 +277,7 @@ $("rtStartBtn").addEventListener("click", async () => {
   rt = new RealtimeSession({
     envelope,
     behavior,
+    speakingContext: speakingCtx,
     log,
     onState: (s) => setSessionState(s),
     onTranscript: ({ role, text }) => appendBubble(role === "user" ? "user" : "bot", text),

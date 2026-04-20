@@ -85,6 +85,13 @@ async def handle_index(request: web.Request) -> web.Response:
     return _send_static_file(request, "index.html")
 
 
+async def handle_admits(request: web.Request) -> web.Response:
+    # Cartoon-bubble, end-user-friendly UI. Same session gate as /
+    # (the auth middleware already covered that); renders the static
+    # asset, which pulls the browser realtime + Web Serial modules.
+    return _send_static_file(request, "admits.html")
+
+
 async def handle_health(_request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
@@ -317,6 +324,7 @@ def build_app(
     app.router.add_get("/healthz", handle_health)
     app.router.add_get("/login", handle_login_page)
     app.router.add_get("/", handle_index)
+    app.router.add_get("/admits", handle_admits)
 
     app.router.add_post("/api/auth/login", handle_login)
     app.router.add_post("/api/auth/logout", handle_logout)
