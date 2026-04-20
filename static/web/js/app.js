@@ -1,0 +1,279 @@
+// Top-level wiring for the browser-mode operator page.
+//
+// Nothing here talks to OpenAI directly — every OpenAI call rides
+// through /api/web/* so the raw key stays on the server.
+
+import { apiJson, whoami, logout } from "./auth.js";
+import { WebSerialTransport, MockTransport } from "./serial.js";
+import { EnvelopeFollower, DEFAULT_JAW_CALIBRATION } from "./envelope.js";
+import { BehaviorEngine, DEFAULT_GAINS } from "./behavior.js";
+import { MotionScheduler } from "./motion.js";
+import { RealtimeSession } from "./realtime.js";
+import { TypedSession } from "./typed.js";
+
+// ---- auth gate ----
+(async () => {
+  const me = await whoami();
+  if (!me.authed) location.replace("/login");
+})();
+
+// ---- element refs ----
+const $ = (id) => document.getElementById(id);
+const logsEl = $("logs");
+const convoEl = $("convo");
+
+function log(msg) {
+  const ts = new Date().toLocaleTimeString();
+  logsEl.textContent += `[${ts}] ${msg}\n`;
+  logsEl.scrollTop = logsEl.scrollHeight;
+}
+
+function appendBubble(role, text) {
+  const b = document.createElement("div");
+  b.className = `bubble ${role}`;
+  b.textContent = text;
+  convoEl.appendChild(b);
+  convoEl.scrollTop = convoEl.scrollHeight;
+}
+
+// ---- motion pipeline ----
+const envelope = new EnvelopeFollower(DEFAULT_JAW_CALIBRATION);
+const behavior = new BehaviorEngine({ envelope, gains: DEFAULT_GAINS });
+let transport = null;
+const scheduler = new MotionScheduler({
+  hz: 30,
+  behavior,
+  transport: null,
+  onFrame: (f) => {
+    const env = envelope.behaviorEnvelope;
+    const envPct = Math.round(env * 100);
+    $("envBar").style.width = `${envPct}%`;
+    $("envVal").textContent = env.toFixed(2);
+    const jawPct = Math.round(f.jaw * 100);
+    $("jawBar").style.width = `${jawPct}%`;
+    $("jawVal").textContent = f.jaw.toFixed(2);
+  },
+});
+scheduler.start();
+
+// ---- UI state ----
+let rt = null;
+let typed = null;
+let serialState = "disconnected";
+
+function setSerialState(s) {
+  const dot = $("serialDot");
+  dot.classList.remove("ok", "warn", "err");
+  if (s.connected) {
+    dot.classList.add("ok");
+    $("serialLabel").textContent = s.mock ? "Mock (no hardware)" : "Connected";
+    $("disconnectBtn").disabled = false;
+    $("wakeBtn").disabled = false;
+    $("centerBtn").disabled = false;
+    $("stopBtn").disabled = false;
+    $("rtStartBtn").disabled = false;
+    $("typedSendBtn").disabled = false;
+    serialState = "connected";
+  } else {
+    dot.classList.add(s.phase === "closed" ? "" : "warn");
+    $("serialLabel").textContent = s.phase === "closed" ? "Not connected" : (s.phase || "Disconnected");
+    $("disconnectBtn").disabled = true;
+    $("wakeBtn").disabled = true;
+    $("centerBtn").disabled = true;
+    $("stopBtn").disabled = true;
+    serialState = "disconnected";
+  }
+}
+
+function setSessionState(s) {
+  const dot = $("sessionDot");
+  dot.classList.remove("ok", "warn", "err");
+  $("sessionLabel").textContent = s;
+  if (["connected", "listening", "thinking", "speaking"].includes(s)) dot.classList.add("ok");
+  else if (s === "connecting") dot.classList.add("warn");
+  else if (s === "error") dot.classList.add("err");
+}
+
+// ---- compat checks ----
+(function compatCheck() {
+  const missing = [];
+  if (!("serial" in navigator)) missing.push("Web Serial (use Chrome/Edge over HTTPS)");
+  if (!window.RTCPeerConnection) missing.push("WebRTC");
+  if (!window.isSecureContext) missing.push("secure context (HTTPS)");
+  if (missing.length) {
+    $("compatHint").textContent = `Heads up: browser is missing ${missing.join(", ")}. Some features will be unavailable.`;
+  }
+})();
+
+// ---- connect / disconnect ----
+$("connectBtn").addEventListener("click", async () => {
+  try {
+    const mock = $("mockBtn").checked;
+    transport = mock
+      ? new MockTransport({ log, onState: setSerialState })
+      : new WebSerialTransport({ log, onState: setSerialState });
+    await transport.connect();
+    scheduler.setTransport(transport);
+  } catch (e) {
+    log(`connect failed: ${e.message || e}`);
+    setSerialState({ connected: false, phase: "closed" });
+    transport = null;
+    scheduler.setTransport(null);
+  }
+});
+
+$("disconnectBtn").addEventListener("click", async () => {
+  if (!transport) return;
+  await transport.disconnect();
+  scheduler.setTransport(null);
+  transport = null;
+});
+
+$("wakeBtn").addEventListener("click", async () => {
+  if (transport && transport.isConnected()) await transport.wakeSweep();
+});
+$("centerBtn").addEventListener("click", async () => {
+  if (transport && transport.isConnected()) await transport.center();
+});
+$("stopBtn").addEventListener("click", async () => {
+  if (transport && transport.isConnected()) await transport.safeStop();
+});
+
+// ---- sliders ----
+$("jawGain").addEventListener("input", (ev) => {
+  envelope.setCalibration({ gain: parseFloat(ev.target.value) });
+});
+$("wingStrength").addEventListener("input", (ev) => {
+  behavior.updateGains({ wingStrength: parseFloat(ev.target.value) });
+});
+$("headDrift").addEventListener("input", (ev) => {
+  const v = parseFloat(ev.target.value);
+  behavior.updateGains({ headLrDrift: v, headUdDrift: v * 0.7 });
+});
+
+// Persist harmless UI prefs (never secrets).
+const PREF_KEY = "maxwell_web_prefs_v1";
+function savePrefs() {
+  try {
+    localStorage.setItem(PREF_KEY, JSON.stringify({
+      voice: $("voiceSelect").value,
+      mode: $("modeSelect").value,
+      micMode: $("micMode").value,
+      jawGain: $("jawGain").value,
+      wingStrength: $("wingStrength").value,
+      headDrift: $("headDrift").value,
+    }));
+  } catch (_) {}
+}
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREF_KEY);
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    if (p.voice) $("voiceSelect").value = p.voice;
+    if (p.mode) $("modeSelect").value = p.mode;
+    if (p.micMode) $("micMode").value = p.micMode;
+    if (p.jawGain) { $("jawGain").value = p.jawGain; envelope.setCalibration({ gain: parseFloat(p.jawGain) }); }
+    if (p.wingStrength) { $("wingStrength").value = p.wingStrength; behavior.updateGains({ wingStrength: parseFloat(p.wingStrength) }); }
+    if (p.headDrift) { $("headDrift").value = p.headDrift; const v = parseFloat(p.headDrift); behavior.updateGains({ headLrDrift: v, headUdDrift: v * 0.7 }); }
+  } catch (_) {}
+}
+loadPrefs();
+["voiceSelect", "modeSelect", "micMode", "jawGain", "wingStrength", "headDrift"].forEach(id =>
+  $(id).addEventListener("change", savePrefs));
+
+// ---- mode toggle ----
+function applyMode() {
+  const m = $("modeSelect").value;
+  $("typedControls").hidden = m !== "typed";
+  $("realtimeControls").hidden = m === "typed";
+  applyMicMode();
+}
+function applyMicMode() {
+  const ptt = $("micMode").value === "ptt";
+  $("talkBtn").hidden = !ptt;
+  $("talkBtn").disabled = !rt || !rt.isRunning();
+}
+$("modeSelect").addEventListener("change", applyMode);
+$("micMode").addEventListener("change", applyMicMode);
+applyMode();
+
+// ---- realtime ----
+$("rtStartBtn").addEventListener("click", async () => {
+  if (rt && rt.isRunning()) return;
+  rt = new RealtimeSession({
+    envelope,
+    behavior,
+    log,
+    onState: (s) => setSessionState(s),
+    onTranscript: ({ role, text }) => appendBubble(role === "user" ? "user" : "bot", text),
+  });
+  try {
+    await rt.start({
+      voice: $("voiceSelect").value,
+      pttMode: $("micMode").value === "ptt",
+    });
+    behavior.setState("listening");
+    $("rtStopBtn").disabled = false;
+    $("rtStartBtn").disabled = true;
+    applyMicMode();
+  } catch (e) {
+    log(`realtime start failed: ${e.message || e}`);
+    rt = null;
+    setSessionState("error");
+  }
+});
+
+$("rtStopBtn").addEventListener("click", async () => {
+  if (!rt) return;
+  await rt.stop();
+  rt = null;
+  behavior.setState("idle");
+  setSessionState("idle");
+  $("rtStartBtn").disabled = false;
+  $("rtStopBtn").disabled = true;
+  $("talkBtn").disabled = true;
+});
+
+// PTT button + global release listeners (matches the /admits UX in
+// the local app — a quick tap should never leave the mic open).
+function pttDown() { if (rt && rt.isRunning()) rt.pttDown(); }
+function pttUp() { if (rt && rt.isRunning()) rt.pttUp(); }
+$("talkBtn").addEventListener("mousedown", (e) => { e.preventDefault(); pttDown(); });
+$("talkBtn").addEventListener("touchstart", (e) => { e.preventDefault(); pttDown(); }, { passive: false });
+window.addEventListener("mouseup", pttUp);
+window.addEventListener("touchend", pttUp);
+window.addEventListener("touchcancel", pttUp);
+
+// ---- typed ----
+typed = new TypedSession({
+  envelope,
+  behavior,
+  log,
+  onState: (s) => setSessionState(s),
+  onTranscript: ({ role, text }) => appendBubble(role === "user" ? "user" : "bot", text),
+});
+async function sendTyped() {
+  const text = ($("typedInput").value || "").trim();
+  if (!text) return;
+  $("typedInput").value = "";
+  await typed.send(text, { voice: $("voiceSelect").value });
+}
+$("typedSendBtn").addEventListener("click", sendTyped);
+$("typedInput").addEventListener("keydown", (ev) => { if (ev.key === "Enter") sendTyped(); });
+
+// ---- logout + unload ----
+$("logoutBtn").addEventListener("click", () => logout());
+window.addEventListener("beforeunload", async () => {
+  try { if (rt) await rt.stop(); } catch (_) {}
+  try { if (transport) await transport.disconnect(); } catch (_) {}
+});
+
+// Small session hint in the top bar.
+(async () => {
+  const me = await whoami();
+  if (me.authed && me.exp) {
+    const mins = Math.max(0, Math.round((me.exp - Date.now() / 1000) / 60));
+    $("sessionHint").textContent = `session · ${mins}m`;
+  }
+})();

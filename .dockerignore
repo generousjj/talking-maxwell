@@ -1,0 +1,13 @@
+# Ignore everything that isn't needed for the hosted web mode image.
+.git
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.log
+.DS_Store
+.env
+.env.local
+.pytest_cache
+tests/__pycache__

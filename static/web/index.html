@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maxwell — Operator</title>
+  <link rel="stylesheet" href="/static/web/css/app.css">
+</head>
+<body>
+  <header class="top-bar">
+    <div class="brand-row">
+      <img src="/static/maxwell.png" alt="Maxwell" class="brand-img small">
+      <h1>Maxwell <span class="muted">· browser mode</span></h1>
+    </div>
+    <div class="top-actions">
+      <span id="sessionHint" class="pill"></span>
+      <button id="logoutBtn" class="ghost">Sign out</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel">
+      <h2>Hardware</h2>
+      <div class="row gap">
+        <button id="connectBtn">Connect Maxwell</button>
+        <button id="disconnectBtn" class="ghost" disabled>Disconnect</button>
+        <button id="wakeBtn" class="ghost" disabled>Wake sweep</button>
+        <button id="centerBtn" class="ghost" disabled>Center</button>
+        <button id="stopBtn" class="ghost" disabled>Safe stop</button>
+        <label class="inline"><input type="checkbox" id="mockBtn"> Mock (no hardware)</label>
+      </div>
+      <div id="serialStatus" class="status-row">
+        <span class="dot" id="serialDot"></span>
+        <span id="serialLabel">Not connected</span>
+      </div>
+      <p class="hint" id="compatHint"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Voice</h2>
+      <div class="row gap wrap">
+        <label class="inline">Mode
+          <select id="modeSelect">
+            <option value="realtime">Realtime (WebRTC)</option>
+            <option value="typed">Typed only</option>
+          </select>
+        </label>
+        <label class="inline">Voice
+          <select id="voiceSelect">
+            <option value="ballad">ballad</option>
+            <option value="alloy">alloy</option>
+            <option value="verse">verse</option>
+            <option value="coral">coral</option>
+            <option value="sage">sage</option>
+            <option value="ash">ash</option>
+          </select>
+        </label>
+        <label class="inline">Mic
+          <select id="micMode">
+            <option value="auto">Auto (VAD)</option>
+            <option value="ptt">Push-to-talk</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row gap wrap" id="realtimeControls">
+        <button id="rtStartBtn" disabled>Start realtime</button>
+        <button id="rtStopBtn" class="ghost" disabled>End session</button>
+        <button id="talkBtn" class="ghost" disabled>Hold to talk</button>
+      </div>
+
+      <div class="row" id="typedControls" hidden>
+        <input id="typedInput" placeholder="Type a prompt and press Enter…" />
+        <button id="typedSendBtn">Send</button>
+      </div>
+
+      <div class="status-row">
+        <span class="dot" id="sessionDot"></span>
+        <span id="sessionLabel">Idle</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Motion</h2>
+      <div class="sliders">
+        <label>Jaw gain <input type="range" id="jawGain" min="0.5" max="6.0" step="0.1" value="2.5"></label>
+        <label>Wing strength <input type="range" id="wingStrength" min="0" max="1.0" step="0.05" value="0.85"></label>
+        <label>Head drift <input type="range" id="headDrift" min="0" max="0.4" step="0.01" value="0.22"></label>
+      </div>
+      <div class="meter-row">
+        <span>Envelope</span>
+        <div class="meter"><div id="envBar"></div></div>
+        <span id="envVal">0.00</span>
+      </div>
+      <div class="meter-row">
+        <span>Jaw</span>
+        <div class="meter"><div id="jawBar"></div></div>
+        <span id="jawVal">0.00</span>
+      </div>
+    </section>
+
+    <section class="panel conversation">
+      <h2>Conversation</h2>
+      <div id="convo" class="convo"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Logs</h2>
+      <pre id="logs" class="logs"></pre>
+    </section>
+  </main>
+
+  <script type="module" src="/static/web/js/app.js"></script>
+</body>
+</html>

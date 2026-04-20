@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maxwell — Sign in</title>
+  <link rel="stylesheet" href="/static/web/css/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="brand">
+      <img src="/static/maxwell.png" alt="Maxwell" class="brand-img">
+      <h1>Maxwell</h1>
+      <p class="brand-sub">Operator sign in</p>
+    </div>
+
+    <form id="loginForm" autocomplete="off" novalidate>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autofocus>
+      <button id="submitBtn" type="submit">Sign in</button>
+      <p id="err" class="err" role="alert" aria-live="polite"></p>
+    </form>
+
+    <footer class="login-footer">
+      <small>Browser-hosted mode · OpenAI key stays on server.</small>
+    </footer>
+  </main>
+  <script type="module" src="/static/web/js/login.js"></script>
+</body>
+</html>

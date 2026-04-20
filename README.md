@@ -57,6 +57,130 @@ If you're the person at the booth and you just want to plug Maxwell in and have 
 
 ---
 
+## 🌐 Browser-hosted web mode (hosted on your server, zero downloads for the booth)
+
+There is a separate, additive deployment mode that swaps the Python-on-every-laptop workflow for a **password-gated public website** the booth runner opens in Chrome. The server hosts the UI and talks to OpenAI; Maxwell's servos are driven directly from the browser over **Web Serial** on whatever laptop he's plugged into. The raw `OPENAI_API_KEY` **never** leaves the server.
+
+This runs **in parallel** to the existing local mode — all existing commands, files, tests, and hardware flows are unchanged.
+
+### When to use which mode
+
+| Situation | Use |
+|---|---|
+| Single laptop, full operator control, every tuning knob exposed | **Local mode** (`python -m app.webapp`) |
+| Someone else runs Maxwell at the fair on a laptop they control — you don't want them installing Python | **Hosted web mode** (`python -m app.web_app`) |
+
+### Browser requirements (hosted mode)
+
+- HTTPS (required for Web Serial and mic permission). `localhost` over HTTP also works for local testing.
+- Chrome / Edge / Arc / any Chromium 89+. **Firefox and Safari do not expose Web Serial** — Maxwell's motion will be inert there, though typed conversation still works.
+- Maxwell plugged via USB into the same laptop running the browser.
+
+### Endpoints
+
+| Path | What it does |
+|---|---|
+| `GET /login` | password form |
+| `GET /` | operator UI (redirects to `/login` if not authed) |
+| `POST /api/auth/login` | sets the signed, HttpOnly, SameSite=Lax session cookie |
+| `POST /api/auth/logout` | clears session cookie |
+| `GET /api/auth/me` | session introspection |
+| `POST /api/web/realtime/session` | mints a short-lived OpenAI Realtime ephemeral token (~60 s) |
+| `POST /api/web/typed` | typed-turn fallback: LLM + TTS run server-side, returns base64 MP3 |
+| `GET /api/web/config` | non-sensitive defaults (`has_openai_key`, `realtime_voice`) |
+| `GET /healthz` | uptime probe |
+
+**The browser never sees `OPENAI_API_KEY`.** It only gets ephemeral `ek_...` tokens and server-rendered audio.
+
+### Environment variables (hosted mode only)
+
+Set in `.env` or the process environment:
+
+- `OPENAI_API_KEY` — the real one; kept server-only.
+- `MAXWELL_WEB_PASSWORD_HASH` — PBKDF2-SHA256 hash. Preferred.
+- `MAXWELL_WEB_PASSWORD` — plaintext fallback for dev only.
+- `SESSION_SECRET` — random bytes used to sign session cookies. If unset, each restart invalidates all sessions.
+- `MAXWELL_ALLOWED_ORIGIN` — optional; pins state-changing API calls to a single origin.
+- `MAXWELL_TRUST_FORWARDED_FOR=1` — set only when behind a trusted reverse proxy.
+- `MAXWELL_WEB_INSECURE_COOKIE=1` — disables the `Secure` cookie flag for plain-HTTP local testing.
+
+Generate a password hash:
+
+```bash
+python -m app.web_auth hash 'whatever-password-you-pick'
+# -> pbkdf2_sha256$200000$...$...
+```
+
+Generate a session secret:
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(48))'
+```
+
+### Run locally
+
+```bash
+pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...
+export MAXWELL_WEB_PASSWORD_HASH="$(python -m app.web_auth hash 'hunter2')"
+export SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export MAXWELL_WEB_INSECURE_COOKIE=1   # only because this is plain HTTP
+python -m app.web_app --host 127.0.0.1 --port 8080
+```
+
+Open `http://127.0.0.1:8080/login`, sign in, click **Connect Maxwell**, then **Start realtime**. The mock transport toggle lets you try the UI with no hardware.
+
+### Deploying to HTTPS
+
+Any Python-friendly PaaS works. A typical flow with a reverse proxy terminating TLS:
+
+```
+[ your HTTPS proxy (Caddy / Cloudflare / Nginx / Fly / Render) ]
+                 |   forwards to
+                 v
+  python -m app.web_app --host 0.0.0.0 --port 8080
+```
+
+Minimal Dockerfile:
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8080
+CMD ["python", "-m", "app.web_app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+Environment variables to set on the platform:
+
+- `OPENAI_API_KEY`
+- `MAXWELL_WEB_PASSWORD_HASH`
+- `SESSION_SECRET`
+- `MAXWELL_ALLOWED_ORIGIN=https://your.domain`
+- `MAXWELL_TRUST_FORWARDED_FOR=1` (if your platform puts you behind a proxy)
+
+Do **not** set `MAXWELL_WEB_INSECURE_COOKIE` in production.
+
+### Security notes
+
+- PBKDF2-SHA256 (200k iters) for password hashing; plain-password fallback only meant for dev.
+- Signed session cookies (HMAC-SHA256) — Secure + HttpOnly + SameSite=Lax.
+- Per-IP login rate limit (8 attempts per 15 min; then 15-min lockout).
+- State-changing API calls are Origin-checked.
+- Login responses are deliberately uniform — a bad password returns `invalid_credentials`, never hints at which half was wrong.
+- Operator-configurable prefs (voice, gain sliders) persist in `localStorage`; **password and API key never do**.
+- The OpenAI Realtime client secret handed to the browser is short-lived (~60 s) and scoped to one session.
+
+### Known parity gaps (browser mode vs local mode)
+
+- Phrase-boundary nods, question-tilt, and emphasis spikes (text-driven) are not ported — browser WebRTC doesn't reliably give us the utterance text early enough. Continuous-sine idle + envelope-driven jaw/wings still look lively.
+- The Python realtime implementation's fine-grained VAD controls are not exposed in the browser UI yet; it uses reasonable server VAD defaults or push-to-talk.
+- Advanced operator features (jaw-hammer re-registration animation, full-reset button) aren't in the browser UI yet — `Disconnect` + `Connect` + `Wake sweep` is the equivalent flow.
+
+---
+
 ## For developers
 
 ### Project layout
