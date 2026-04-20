@@ -204,6 +204,33 @@ def test_vercel_config_present():
     assert any(r.get("destination", "").startswith("/api") for r in data["rewrites"])
 
 
+def test_motion_config_exposes_correct_pins(client):
+    # Regression: before the motion-config endpoint existed, the JS
+    # transport hardcoded head_lr=pin10/head_ud=pin11, which didn't
+    # match config.yaml's head_lr=5/head_ud=6 and silently sent every
+    # head command to empty GPIO pins. Only wings (pin 3, matched)
+    # ever visibly moved.
+    c, _ = client
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    resp = c.get("/api/web/motion-config")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    chans = data["channels"]
+    assert chans["head_lr"]["pin"] == 5
+    assert chans["head_ud"]["pin"] == 6
+    assert chans["wing"]["pin"] == 3
+    assert chans["jaw"]["pin"] == 9
+    assert chans["jaw"]["inverted"] is True
+    assert data["source"] == "config.yaml"
+
+
+def test_motion_config_gated_by_auth(client):
+    c, _ = client
+    resp = c.get("/api/web/motion-config")
+    assert resp.status_code == 401
+
+
 def test_api_requirements_are_minimal():
     root = Path(__file__).resolve().parent.parent
     raw = (root / "api" / "requirements.txt").read_text().lower()

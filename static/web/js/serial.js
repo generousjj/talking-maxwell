@@ -18,16 +18,23 @@ import { cmd, normalizedToCompressed, parseLine } from "./bottango.js";
 
 const BAUD = 115200;
 
-// Channels mirror the defaults from config.yaml (the ones that have
-// been working for the local operator build). Operators can override
-// the PWM ranges at connect time if they need to; the normalized 0..1
-// targets coming out of the behavior engine are mapped linearly into
-// each channel's [minPwm, maxPwm] range through Bottango's 0..8192.
+// Channel defaults mirror config.yaml exactly — these are the values
+// that drive the working Python operator build. In normal use the app
+// fetches /api/web/motion-config and passes overrides via the
+// constructor, so any tuning in config.yaml flows to the browser with
+// no JS edit. These hardcoded values are the fallback (used if the
+// fetch fails, or for the MockTransport which never touches hardware).
+//
+// IMPORTANT: pins MUST match the ESP32 wiring. Sending to the wrong
+// pin is silent — the firmware registers a servo that no hardware is
+// connected to, and the real servo just sits there. That's what was
+// happening before with head_lr/head_ud pinned to 10/11 instead of
+// 5/6.
 const DEFAULT_CHANNELS = {
-  jaw:      { pin: 9,  minPwm: 1450, maxPwm: 1800, maxPwmPerSec: 3000, startingPwm: 1625, inverted: true  },
-  head_ud:  { pin: 10, minPwm: 900,  maxPwm: 2100, maxPwmPerSec: 2500, startingPwm: 1500, inverted: false },
-  head_lr:  { pin: 11, minPwm: 900,  maxPwm: 2100, maxPwmPerSec: 2500, startingPwm: 1500, inverted: false },
-  wing:     { pin: 3,  minPwm: 1100, maxPwm: 1900, maxPwmPerSec: 3000, startingPwm: 1500, inverted: false },
+  jaw:      { pin: 9, minPwm: 1450, maxPwm: 1800, maxPwmPerSec: 3000, startingPwm: 1625, inverted: true  },
+  head_lr:  { pin: 5, minPwm: 1275, maxPwm: 1725, maxPwmPerSec: 1800, startingPwm: 1500, inverted: false },
+  head_ud:  { pin: 6, minPwm: 850,  maxPwm: 2100, maxPwmPerSec: 1800, startingPwm: 1475, inverted: false },
+  wing:     { pin: 3, minPwm: 1500, maxPwm: 2000, maxPwmPerSec: 3000, startingPwm: 1750, inverted: false },
 };
 
 // Bottango identifies effectors by pin for `sCI`.

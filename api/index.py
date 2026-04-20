@@ -54,6 +54,7 @@ from app.auth_core import (
     sign_session,
     verify_session,
 )
+from app.motion_config import load_motion_config
 
 log = logging.getLogger("maxwell.vercel")
 logging.basicConfig(level=logging.INFO)
@@ -304,6 +305,21 @@ async def web_config():
             "has_openai_key": bool(OPENAI_API_KEY),
         }
     )
+
+
+@app.get("/api/web/motion-config")
+async def web_motion_config():
+    # Pins, PWM ranges, behavior gains, and jaw calibration come from
+    # config.yaml so tuning the operator build automatically flows to
+    # the browser. Falls back to DEFAULT_* if config.yaml is missing.
+    try:
+        data = load_motion_config(ROOT)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("motion_config load failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "error": "motion_config_load_failed"}, status_code=500
+        )
+    return JSONResponse({"ok": True, **data})
 
 
 @app.post("/api/web/realtime/session")

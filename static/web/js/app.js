@@ -40,6 +40,25 @@ function appendBubble(role, text) {
 const envelope = new EnvelopeFollower(DEFAULT_JAW_CALIBRATION);
 const behavior = new BehaviorEngine({ envelope, gains: DEFAULT_GAINS });
 let transport = null;
+
+// Live motion config (pins/PWM ranges, behavior gains, jaw calibration)
+// is served from /api/web/motion-config which reads config.yaml on the
+// server. Without this, browser mode used hardcoded defaults that
+// drifted from the actual hardware wiring and made only wings move.
+let motionConfig = null;
+(async () => {
+  try {
+    const m = await apiJson("/api/web/motion-config", { method: "GET" });
+    if (m && m.ok) {
+      motionConfig = m;
+      if (m.gains) behavior.updateGains(m.gains);
+      if (m.jaw_calibration) envelope.setCalibration(m.jaw_calibration);
+      log(`motion config loaded from ${m.source}`);
+    }
+  } catch (e) {
+    log(`motion config fetch failed (${e.message || e}); using baked-in defaults`);
+  }
+})();
 const scheduler = new MotionScheduler({
   hz: 30,
   behavior,
@@ -109,9 +128,13 @@ function setSessionState(s) {
 $("connectBtn").addEventListener("click", async () => {
   try {
     const mock = $("mockBtn").checked;
+    // Pass the server-provided channel map through to the transport
+    // so pins / PWM ranges match config.yaml. Falls back to transport
+    // defaults if motion-config hasn't loaded yet.
+    const channels = (motionConfig && motionConfig.channels) || undefined;
     transport = mock
       ? new MockTransport({ log, onState: setSerialState })
-      : new WebSerialTransport({ log, onState: setSerialState });
+      : new WebSerialTransport({ log, onState: setSerialState, channels });
     await transport.connect();
     scheduler.setTransport(transport);
   } catch (e) {

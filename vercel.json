@@ -5,7 +5,7 @@
       "runtime": "@vercel/python@6.35.0",
       "memory": 512,
       "maxDuration": 30,
-      "includeFiles": "static/**"
+      "includeFiles": "{static/**,config.yaml}"
     }
   },
   "rewrites": [

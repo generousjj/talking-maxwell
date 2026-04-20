@@ -25,15 +25,20 @@ function raisedCosine(phase) {
   return 0.5 - 0.5 * Math.cos(TAU * phase);
 }
 
+// Defaults mirror motion.behavior in config.yaml. Keep these in lockstep
+// with DEFAULT_GAINS in app/motion_config.py — that's the Python-side
+// source of truth that actually reads the yaml at runtime.
 export const DEFAULT_GAINS = {
-  headLrDrift: 0.22,
-  headUdDrift: 0.15,
-  wingStrength: 0.85,
-  idleWingPeriodS: 4.3,
-  yawPeriodS: 7.9,
-  pitchPeriodS: 11.3,
-  speakingBobStrength: 0.09,
-  speakingWingStrength: 0.55,
+  headLrDrift:          0.32,   // head_lr_drift
+  headUdDrift:          0.26,   // head_ud_drift
+  wingStrength:         0.69,   // waiting_wing_strength (idle flap)
+  speakingWingStrength: 1.0,    // wing_strength (speaking flap)
+  speakingBobStrength:  0.22,   // envelope_head_bob
+  idleNodStrength:      0.30,   // idle_nod_strength   (head_ud sine amp)
+  idleTiltStrength:     0.20,   // idle_tilt_strength  (head_lr sine amp)
+  idleNodPeriodS:       3.7,    // idle_nod_period_s
+  idleTiltPeriodS:      5.1,    // idle_tilt_period_s
+  idleWingPeriodS:      4.3,
 };
 
 export class BehaviorEngine {
@@ -61,27 +66,42 @@ export class BehaviorEngine {
     if (this.state === "speaking") {
       // Jaw: pull the calibrated jaw value from the follower.
       const jaw = this.envelope ? this.envelope._mapToJaw(this.envelope._smoothed) : 0;
-      const headLr = 0.5 + this._yawSine(t) + env * 0.02;
-      const headUd = 0.5 + this._pitchSine(t) * 0.7 + env * this.gains.speakingBobStrength;
-      const wing = clamp01(env * this.gains.speakingWingStrength + 0.05 * this._flapPulse(t, 1.6));
+      // Speaking head is idle sines + envelope-driven bob on pitch,
+      // plus a small envelope-driven yaw sway. Amplitudes use the
+      // full head_lr_drift / head_ud_drift range from config.yaml so
+      // the head motion is visibly larger during speech than idle.
+      const yaw = this._sineAmp(t, this.gains.idleTiltPeriodS, this.gains.headLrDrift);
+      const pitch = this._sineAmp(t, this.gains.idleNodPeriodS, this.gains.headUdDrift, 1.23);
+      const headLr = 0.5 + yaw + env * 0.05;
+      const headUd = 0.5 + pitch + env * this.gains.speakingBobStrength;
+      // Wing: envelope-driven with a slow flap underpulse so it never
+      // flat-lines during long silences in a turn.
+      const wing = clamp01(
+        env * this.gains.speakingWingStrength
+        + 0.15 * this._flapPulse(t, this.gains.idleWingPeriodS) * this.gains.wingStrength
+      );
       return { jaw: clamp01(jaw), head_lr: clamp01(headLr), head_ud: clamp01(headUd), wing };
     }
 
-    // idle / listening / thinking all share the continuous-motion look
-    const wing = clamp01(this._flapPulse(t, this.gains.idleWingPeriodS) * this.gains.wingStrength);
-    const headLr = clamp01(0.5 + this._yawSine(t));
-    const headUd = clamp01(0.5 + this._pitchSine(t));
-    return { jaw: 0, head_lr: headLr, head_ud: headUd, wing };
+    // idle / listening / thinking share the continuous-motion look:
+    // head yaws on one sine, pitches on another (non-harmonic periods),
+    // wings flap on a third. Nothing ever sits still.
+    const yaw = this._sineAmp(t, this.gains.idleTiltPeriodS, this.gains.idleTiltStrength);
+    const pitch = this._sineAmp(t, this.gains.idleNodPeriodS, this.gains.idleNodStrength, 1.23);
+    const wing = clamp01(
+      this._flapPulse(t, this.gains.idleWingPeriodS) * this.gains.wingStrength
+    );
+    return {
+      jaw: 0,
+      head_lr: clamp01(0.5 + yaw),
+      head_ud: clamp01(0.5 + pitch),
+      wing,
+    };
   }
 
-  _yawSine(t) {
-    const p = this.gains.yawPeriodS;
-    return Math.sin(TAU * (t / p)) * this.gains.headLrDrift;
-  }
-  _pitchSine(t) {
-    const p = this.gains.pitchPeriodS;
-    // non-zero phase so it desyncs from yaw
-    return Math.sin(TAU * (t / p) + 1.23) * this.gains.headUdDrift;
+  _sineAmp(t, periodS, amp, phase = 0) {
+    if (!(periodS > 0)) return 0;
+    return Math.sin(TAU * (t / periodS) + phase) * amp;
   }
   _flapPulse(t, periodS) {
     // Raised cosine pulse for each cycle.

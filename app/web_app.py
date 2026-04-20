@@ -339,6 +339,22 @@ def build_app(
 
     app.router.add_get("/api/web/config", handle_config)
 
+    # Motion/channel/gain tuning, live from config.yaml so the browser
+    # always sees the same values the Python operator build uses.
+    async def handle_motion_config(_request: web.Request) -> web.Response:
+        from app.motion_config import load_motion_config
+
+        try:
+            data = load_motion_config(Path(__file__).resolve().parent.parent)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("motion_config load failed: %s", exc)
+            return web.json_response(
+                {"ok": False, "error": "motion_config_load_failed"}, status=500
+            )
+        return web.json_response({"ok": True, **data})
+
+    app.router.add_get("/api/web/motion-config", handle_motion_config)
+
     web_root = _web_root()
     if web_root.is_dir():
         app.router.add_static(
