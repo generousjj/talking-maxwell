@@ -1,0 +1,7 @@
+# Vercel Python runtime — dependencies for api/index.py only.
+# Kept minimal so cold-starts stay snappy; numpy/aiohttp/etc. from
+# the local operator build are not needed here.
+
+fastapi>=0.115,<1
+httpx>=0.27,<1
+python-dotenv>=1.0,<2

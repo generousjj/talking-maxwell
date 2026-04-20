@@ -130,7 +130,40 @@ python -m app.web_app --host 127.0.0.1 --port 8080
 
 Open `http://127.0.0.1:8080/login`, sign in, click **Connect Maxwell**, then **Start realtime**. The mock transport toggle lets you try the UI with no hardware.
 
-### Deploying to HTTPS
+### Deploying on Vercel (GitHub → auto-deploy → custom domain)
+
+Repo ships a `vercel.json` and a FastAPI entrypoint at `api/index.py`, so Vercel's Python runtime runs the same hosted app with **zero extra setup**. The whole deploy is: import repo, set 3 env vars, attach your domain.
+
+1. **Push this repo to GitHub** (already done at `github.com/generousjj/talking-maxwell`).
+2. [vercel.com/new](https://vercel.com/new) → **Import Git Repository** → pick `talking-maxwell`.
+3. Framework preset: "**Other**" (Vercel auto-detects the Python function).  Root directory: `/`.  Build + output settings: leave defaults.
+4. **Environment Variables** → add these three (plus anything else from `.env.example` you want overridden):
+
+   | Key | Value |
+   |---|---|
+   | `OPENAI_API_KEY` | your real `sk-...` — kept server-side, never shipped to the browser |
+   | `MAXWELL_WEB_PASSWORD_HASH` | output of `python -m app.web_auth hash 'your-booth-password'` |
+   | `SESSION_SECRET` | `python -c 'import secrets; print(secrets.token_urlsafe(48))'` |
+
+   After your domain is attached (next step), also add:
+
+   | Key | Value |
+   |---|---|
+   | `MAXWELL_ALLOWED_ORIGIN` | `https://maxwell.yourdomain.com` — pins CSRF check to your domain |
+
+5. **Deploy**. First build takes ~1 min (Vercel reads `api/requirements.txt`, which is kept minimal: `fastapi`, `httpx`, `python-dotenv`).
+6. **Attach your domain**: project → **Settings → Domains** → add `maxwell.yourdomain.com` (or whatever subdomain) → Vercel shows you the CNAME / A record to set on your registrar. HTTPS cert is auto-issued.
+7. Visit `https://maxwell.yourdomain.com/login`, sign in with the password you hashed in step 4, click **Connect Maxwell**, then **Start realtime**. Everything else — WebRTC to OpenAI, Web Serial to the ESP32, jaw envelope, motion scheduler — runs in the booth runner's browser.
+
+Vercel-specific notes:
+
+- `api/requirements.txt` is intentionally minimal (no `numpy`, `sounddevice`, `pyserial`, etc.) so cold starts stay under ~1 s.
+- The in-memory login rate limiter resets on every cold start. Cookies are still cryptographically signed, so this is safe; the "8 attempts / 15 min" lockout just becomes per-invocation. If you want cross-invocation lockouts, swap `LoginLimiter` for a Vercel KV / Upstash Redis-backed one.
+- `VERCEL=1` is set automatically by the runtime, which makes the auth code trust `x-forwarded-for` for per-IP rate-limiting. No action needed.
+- You do **not** need `MAXWELL_WEB_INSECURE_COOKIE` on Vercel — HTTPS is default.
+- The local operator app (`python -m app.webapp`) is **not** deployed by Vercel and cannot be — it needs direct USB-serial access, which doesn't exist in a serverless function. That remains a local-laptop-only thing.
+
+### Deploying on Fly / Render / Railway / any Dockerfile host
 
 Any Python-friendly PaaS works. A typical flow with a reverse proxy terminating TLS:
 
