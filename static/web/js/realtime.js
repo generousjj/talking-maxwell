@@ -53,6 +53,12 @@ export class RealtimeSession {
     this._micEnabled = true;
     this._pendingUser = "";
     this._pendingAssistant = "";
+    // Last wall-clock timestamp the remote audio crossed a "voiced"
+    // threshold. Used by the silence watchdog to safely transition
+    // SPEAKING -> LISTENING after playback actually drains, in case
+    // `output_audio_buffer.stopped` isn't emitted by the WebRTC peer.
+    this._lastLoudAt = 0;
+    this._speakingSince = 0;
   }
 
   isRunning() { return this._running; }
@@ -227,9 +233,23 @@ export class RealtimeSession {
       this.behavior && this.behavior.setState("thinking");
       this.onState("thinking");
     } else if (t === "response.audio.delta" || t === "output_audio_buffer.started") {
+      // Enter SPEAKING as soon as audio starts flowing. We stay here
+      // until either the WebRTC output buffer actually drains OR the
+      // envelope-silence watchdog catches sustained silence — NOT
+      // on `response.done`, which only means the model finished
+      // generating, not that playback finished. The old trigger was
+      // dropping Maxwell back into idle ~1 s after speech started
+      // and breathing right over the rest of the audio.
+      //
+      // Only stamp the speaking-start timer on the edge (state flip),
+      // not on every audio delta — otherwise speakingMs would never
+      // exceed the watchdog floor and Maxwell would get stuck SPEAKING.
+      const wasSpeaking = this.behavior && this.behavior.state === "speaking";
       this.behavior && this.behavior.setState("speaking");
       this.onState("speaking");
-    } else if (t === "response.done" || t === "output_audio_buffer.stopped") {
+      if (!wasSpeaking) this._speakingSince = performance.now();
+      this._lastLoudAt = performance.now();
+    } else if (t === "output_audio_buffer.stopped" || t === "output_audio_buffer.cleared") {
       this.behavior && this.behavior.setState("listening");
       this.onState("listening");
     } else if (t === "error") {
@@ -272,5 +292,27 @@ export class RealtimeSession {
     this.envelope.processRms(rms);
     // Same RMS feeds the separate (higher-gain) behavior envelope.
     if (this.speakingContext) this.speakingContext.updateFromRms(rms);
+
+    // ---- SPEAKING -> LISTENING silence watchdog ----
+    // OpenAI sometimes drops `output_audio_buffer.stopped` on WebRTC
+    // peers (or the event name/timing varies). Without this watchdog
+    // Maxwell could stay stuck SPEAKING forever after the last reply.
+    // With it, we watch the post-jaw smoothed envelope and flip to
+    // LISTENING only after >=1.1 s of continuous quiet AND >=1.5 s
+    // since SPEAKING started (so a short gap right after the first
+    // audio chunk doesn't immediately kick us out).
+    const now = performance.now();
+    // Jaw-path _smoothed is already attack/release-smoothed and sits
+    // in [0, 1] — a reliable "is audio playing" signal.
+    const live = this.envelope._smoothed > 0.05;
+    if (live) this._lastLoudAt = now;
+    if (this.behavior && this.behavior.state === "speaking") {
+      const quietMs = now - this._lastLoudAt;
+      const speakingMs = now - this._speakingSince;
+      if (quietMs > 1100 && speakingMs > 1500) {
+        this.behavior.setState("listening");
+        this.onState("listening");
+      }
+    }
   }
 }
