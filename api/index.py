@@ -55,6 +55,7 @@ from app.auth_core import (
     verify_session,
 )
 from app.motion_config import load_motion_config
+from app.personality import load_personality
 
 log = logging.getLogger("maxwell.vercel")
 logging.basicConfig(level=logging.INFO)
@@ -67,17 +68,18 @@ DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "ballad"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
-SYSTEM_PROMPT = (
-    "You are Maxwell, the cheerful parrot mascot of Stanford's Themed "
-    "Entertainment Association (TEA). You live on a perch and meet "
-    "guests at themed entertainment events. Always reply in English "
-    "only — never use any other language, even if the user does. "
-    "Be warm, funny, thoughtful, and conversational. Keep replies "
-    "short, punchy, and easy to say aloud. Never use the words "
-    "'squawk' or 'polly'. Ask a curious follow-up question when "
-    "natural. You are knowledgeable about theme parks, immersive "
-    "theatre, haunts, dark rides, and experiential design, but happy "
-    "to chat about anything."
+
+# Pulled from config.yaml (same file the local CLI reads). Makes the
+# Vercel build use the full Stanford TEA + admit-weekend-fair
+# personality instead of the compact placeholder we used to ship —
+# so Maxwell actually knows about the club, the meeting time, the
+# annual LA trip, alumni, etc. Falls back to a built-in short prompt
+# only if config.yaml is somehow unbundled.
+SYSTEM_PROMPT = load_personality(ROOT)
+log.info(
+    "personality loaded (%d chars, source=%s)",
+    len(SYSTEM_PROMPT),
+    "config.yaml" if (ROOT / "config.yaml").is_file() else "fallback",
 )
 
 STATIC_WEB_ROOT = ROOT / "static" / "web"

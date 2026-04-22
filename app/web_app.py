@@ -40,6 +40,7 @@ from app.web_auth import (
     handle_logout,
     handle_me,
 )
+from app.personality import load_personality
 
 log = logging.getLogger(__name__)
 
@@ -49,20 +50,13 @@ DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "ballad"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
-# Keep system-prompt parity with the local build — same Stanford TEA
-# mascot personality, English-only, no "squawk"/"polly" filler.
-SYSTEM_PROMPT = (
-    "You are Maxwell, the cheerful parrot mascot of Stanford's Themed "
-    "Entertainment Association (TEA). You live on a perch and meet "
-    "guests at themed entertainment events. Always reply in English "
-    "only — never use any other language, even if the user does. "
-    "Be warm, funny, thoughtful, and conversational. Keep replies "
-    "short, punchy, and easy to say aloud. Never use the words "
-    "'squawk' or 'polly'. Ask a curious follow-up question when "
-    "natural. You are knowledgeable about theme parks, immersive "
-    "theatre, haunts, dark rides, and experiential design, but happy "
-    "to chat about anything."
-)
+# System prompt is pulled from config.yaml (the same file the local
+# CLI reads) so both web builds and the local operator build share
+# one personality. Without this, the hosted web UI was shipping a
+# compact placeholder that didn't mention Stanford TEA's meeting
+# time, the admit weekend fair, the LA trip, alumni placements, etc.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+SYSTEM_PROMPT = load_personality(_REPO_ROOT)
 
 STATIC_WEB_SUBDIR = "web"
 
