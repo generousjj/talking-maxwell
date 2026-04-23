@@ -104,12 +104,12 @@ export class WebSerialTransport {
     this._startReaderLoop();
     this._setState({ connected: true, phase: "handshake" });
 
-    // Match pyserial's dsrdtr=False/rtscts=False behavior as closely
-    // as we can: deassert DTR and RTS, then give the ESP32 time to
-    // finish booting and send its startup `btngoHSK` banner. Without
-    // this pause, our first hRQ races the firmware boot and we time
-    // out waiting for a reply. setSignals throws on some platforms
-    // (Linux, some drivers); treat that as non-fatal.
+    // Chrome Web Serial opens the port with DTR+RTS asserted, which
+    // triggers the ESP32's auto-reset circuit. Clear both so the chip
+    // runs normally, wait long enough for the firmware (Arduino-style
+    // setup can take 2+ s on ESP32), and only THEN kick the handshake.
+    // setSignals throws on some platforms (Linux, some drivers) — not
+    // fatal, just log it.
     try {
       if (port.setSignals) {
         await port.setSignals({ dataTerminalReady: false, requestToSend: false });
@@ -117,7 +117,7 @@ export class WebSerialTransport {
     } catch (e) {
       this.log(`setSignals not supported: ${e.message || e}`);
     }
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 2500));
 
     try {
       await this._handshake();
@@ -257,40 +257,48 @@ export class WebSerialTransport {
     } else if (parsed.type === "ok") {
       const w = this._pendingOks.shift();
       if (w) w.resolve();
+    } else if (parsed.type === "other" && parsed.line && this._verbose) {
+      // Echo the first few unrecognized lines during connect so we can
+      // diagnose firmware issues. Without this, a handshake timeout
+      // gave zero signal about WHY — was the firmware silent? was it
+      // the wrong protocol? was the baud wrong?
+      this._rawLineCount = (this._rawLineCount || 0) + 1;
+      if (this._rawLineCount <= 20) {
+        this.log(`  serial rx: ${parsed.line.slice(0, 160)}`);
+      }
     }
   }
 
   async _handshake() {
-    // Opening the Web Serial port typically toggles DTR, which resets
-    // the ESP32 on most boards. The firmware prints BOOT and then an
-    // unsolicited `btngoHSK` line during startup. If we blast hRQ at
-    // it immediately, the firmware isn't listening yet and the boot
-    // banner is gone by the time our first _waitForHSK is armed — so
-    // wait a beat, then if a fresh-enough HSK was already seen from
-    // the boot banner, accept that as the handshake.
-    if (this._lastHSKParsedAt && (Date.now() - this._lastHSKParsedAt) < 2500) {
-      return;
-    }
-    // Try a generous total budget (8s) with slightly longer per-attempt
-    // waits so slow CH340/CP210x boards that are still resetting get a
-    // chance to reply.
-    const deadline = Date.now() + 8000;
-    let attempt = 0;
-    while (Date.now() < deadline) {
-      attempt += 1;
-      const rand = (Math.random() * 1_000_000_000) | 0;
-      await this._write(cmd.handshake(rand));
-      try {
-        await this._waitForHSK(1500);
+    // Enable raw-line echo during handshake so the on-page log shows
+    // whatever the firmware is actually saying if the handshake fails.
+    this._verbose = true;
+    this._rawLineCount = 0;
+    try {
+      if (this._lastHSKParsedAt && (Date.now() - this._lastHSKParsedAt) < 3000) {
         return;
-      } catch (_) {
-        // If an HSK arrived *just* before we armed the waiter, accept it.
-        if (this._lastHSKParsedAt && (Date.now() - this._lastHSKParsedAt) < 1500) {
+      }
+      const deadline = Date.now() + 10000;
+      let attempt = 0;
+      while (Date.now() < deadline) {
+        attempt += 1;
+        const rand = (Math.random() * 1_000_000_000) | 0;
+        await this._write(cmd.handshake(rand));
+        try {
+          await this._waitForHSK(1500);
           return;
+        } catch (_) {
+          if (this._lastHSKParsedAt && (Date.now() - this._lastHSKParsedAt) < 1500) {
+            return;
+          }
         }
       }
+      throw new Error(
+        `handshake timeout after ${attempt} attempt(s); saw ${this._rawLineCount || 0} non-HSK line(s)`
+      );
+    } finally {
+      this._verbose = false;
     }
-    throw new Error(`handshake timeout after ${attempt} attempt(s)`);
   }
 
   _waitForHSK(ms) {
