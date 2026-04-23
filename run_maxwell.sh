@@ -108,16 +108,65 @@ if [ -z "$DETECTED" ]; then
 fi
 
 # ---------- 6. Launch ----------
-URL="http://127.0.0.1:8787/admits"
+PORT=8787
+URL="http://127.0.0.1:${PORT}/admits"
+
+# Make sure any previous Maxwell run that died without releasing the
+# port gets cleared out. Without this, `python3 -m app.webapp` fails
+# with "Address already in use" and the browser just sees
+# "refused to connect" because nothing is listening on 8787.
+if command -v lsof >/dev/null 2>&1 && lsof -nPi ":${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "⚠️  Port ${PORT} is already in use — trying to free it..."
+  PIDS=$(lsof -nPi ":${PORT}" -sTCP:LISTEN -t 2>/dev/null || true)
+  if [ -n "$PIDS" ]; then
+    kill $PIDS 2>/dev/null || true
+    sleep 1
+    # Force-kill anything still hanging on.
+    STILL=$(lsof -nPi ":${PORT}" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [ -n "$STILL" ]; then kill -9 $STILL 2>/dev/null || true; fi
+  fi
+fi
+
 echo ""
 echo "🚀 Launching web server..."
-echo "   Once it's ready you can open: ${URL}"
+echo "   Browser will open automatically once it's ready."
 echo "   Stop Maxwell with Ctrl-C in this window."
 echo ""
 
-# Open the browser ~3 seconds after the server starts (gives it time to bind).
-( sleep 3 && (command -v open >/dev/null 2>&1 && open "$URL" \
-              || command -v xdg-open >/dev/null 2>&1 && xdg-open "$URL" \
-              || true) ) &
+# Wait for the server to actually bind the port before opening the
+# browser. Previously we used `sleep 3`, which opened Chrome before
+# the server was up on slow laptops — that's the "Safari/Chrome can't
+# connect to the server" error a user might see at the fair.
+( for i in $(seq 1 120); do
+    if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+      (command -v open >/dev/null 2>&1 && open "$URL") \
+        || (command -v xdg-open >/dev/null 2>&1 && xdg-open "$URL") \
+        || true
+      break
+    fi
+    sleep 0.25
+  done ) &
 
-exec python3 -m app.webapp --backend bottango
+# Trap any non-zero exit so the Terminal window keeps the Python
+# traceback on screen instead of slamming shut when `.command` files
+# finish — otherwise the operator would just see "refused to connect"
+# in the browser with no clue why. This `read` block only runs on
+# failure; a normal Ctrl-C exits cleanly.
+set +e
+python3 -m app.webapp --backend bottango
+RC=$?
+set -e
+
+if [ "$RC" -ne 0 ] && [ "$RC" -ne 130 ]; then
+  # 130 = SIGINT (Ctrl-C), the normal "stop Maxwell" exit path.
+  echo ""
+  echo "❌ Maxwell crashed (exit code ${RC})."
+  echo "   The error above is the cause. Common fixes:"
+  echo "   • Port ${PORT} busy — restart the laptop, or close any"
+  echo "     other terminals running Maxwell."
+  echo "   • Missing OPENAI_API_KEY — edit .env in this folder."
+  echo "   • config.yaml unreadable — restore it from the repo."
+  echo ""
+  echo "Press Enter to close this window."
+  read -r _
+fi
