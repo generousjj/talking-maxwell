@@ -100,7 +100,13 @@ function setSerialState(s) {
     $("typedSendBtn").disabled = false;
     serialState = "connected";
   } else {
-    dot.classList.add(s.phase === "closed" ? "" : "warn");
+    // classList.add rejects empty strings, so only add a class when
+    // we actually have one to add. Passing `""` here used to crash
+    // the whole connect handler with `DOMTokenList.add: token must
+    // not be empty`, which is why people saw "connected" but no
+    // servo motion — the exception aborted scheduler.setTransport
+    // and the frame loop never got a real transport.
+    if (s.phase !== "closed") dot.classList.add("warn");
     $("serialLabel").textContent = s.phase === "closed" ? "Not connected" : (s.phase || "Disconnected");
     $("disconnectBtn").disabled = true;
     $("wakeBtn").disabled = true;
