@@ -19,6 +19,12 @@ import { BehaviorEngine, DEFAULT_GAINS } from "./behavior.js";
 import { MotionScheduler } from "./motion.js";
 import { RealtimeSession } from "./realtime.js";
 import { LiveSpeakingContext } from "./live_speaking_context.js";
+import {
+  listAudioDevices,
+  renderDeviceSelect,
+  persistSelectTo,
+  outputPickerSupported,
+} from "./audio_devices.js";
 
 (async () => {
   const me = await whoami();
@@ -86,6 +92,37 @@ const scheduler = new MotionScheduler({
 });
 scheduler.start();
 
+// ---- audio device pickers ----
+
+const MIC_DEVICE_KEY = "maxwell:admits:mic";
+const OUT_DEVICE_KEY = "maxwell:admits:output";
+
+async function refreshAudioDeviceLists() {
+  const { inputs, outputs } = await listAudioDevices();
+  renderDeviceSelect($("micDeviceSelect"), inputs, MIC_DEVICE_KEY, { defaultLabel: "Default microphone" });
+  const outSel = $("outputDeviceSelect");
+  if (outputPickerSupported()) {
+    renderDeviceSelect(outSel, outputs, OUT_DEVICE_KEY, { defaultLabel: "Default speaker" });
+  } else {
+    outSel.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(not supported in this browser)";
+    outSel.appendChild(opt);
+    outSel.disabled = true;
+  }
+}
+refreshAudioDeviceLists();
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => refreshAudioDeviceLists());
+}
+persistSelectTo(MIC_DEVICE_KEY, $("micDeviceSelect"));
+persistSelectTo(OUT_DEVICE_KEY, $("outputDeviceSelect"), async (deviceId) => {
+  if (rt && rt.isRunning() && typeof rt.setOutputDevice === "function") {
+    await rt.setOutputDevice(deviceId);
+  }
+});
+
 // ---- realtime session ----
 
 let micMode = "auto";   // "auto" or "ptt"
@@ -142,7 +179,15 @@ async function startRealtime() {
     },
   });
   try {
-    await rt.start({ voice: "ballad", pttMode: micMode === "ptt" });
+    await rt.start({
+      voice: "ballad",
+      pttMode: micMode === "ptt",
+      micDeviceId: ($("micDeviceSelect") && $("micDeviceSelect").value) || "",
+      outputDeviceId: ($("outputDeviceSelect") && $("outputDeviceSelect").value) || "",
+    });
+    // After the mic is held once, device labels become non-empty —
+    // re-render so the guest sees real device names.
+    refreshAudioDeviceLists();
     behavior.setState("listening");
     setStatus(
       micMode === "ptt" ? "Hold the button to talk" : "Maxwell is listening",

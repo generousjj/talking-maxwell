@@ -71,10 +71,11 @@ export class RealtimeSession {
 
   isRunning() { return this._running; }
 
-  async start({ voice = "ballad", pttMode = false } = {}) {
+  async start({ voice = "ballad", pttMode = false, micDeviceId = "", outputDeviceId = "" } = {}) {
     if (this._running) return;
     this._running = true;
     this._pttMode = pttMode;
+    this._outputDeviceId = outputDeviceId || "";
     this.onState("connecting");
 
     const sess = await apiJson("/api/web/realtime/session", {
@@ -84,14 +85,16 @@ export class RealtimeSession {
     const token = sess.client_secret;
     const model = sess.model;
 
+    const audioConstraints = {
+      channelCount: 1,
+      sampleRate: 24000,
+      noiseSuppression: true,
+      echoCancellation: true,
+      autoGainControl: true,
+    };
+    if (micDeviceId) audioConstraints.deviceId = { exact: micDeviceId };
     this.micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        sampleRate: 24000,
-        noiseSuppression: true,
-        echoCancellation: true,
-        autoGainControl: true,
-      },
+      audio: audioConstraints,
     });
 
     const pc = new RTCPeerConnection();
@@ -172,6 +175,21 @@ export class RealtimeSession {
     }
     this.analyser = null;
     this.onState("idle");
+  }
+
+  // Swap the audio output device on the fly (user picked a new
+  // speaker mid-session). Stores the choice so reconnects still use
+  // it. Returns a promise that resolves true on success.
+  async setOutputDevice(deviceId) {
+    this._outputDeviceId = deviceId || "";
+    if (!this.audioEl || typeof this.audioEl.setSinkId !== "function") return false;
+    try {
+      await this.audioEl.setSinkId(this._outputDeviceId);
+      return true;
+    } catch (e) {
+      this.log(`setSinkId failed: ${e.message || e}`);
+      return false;
+    }
   }
 
   pttDown() {
@@ -306,6 +324,14 @@ export class RealtimeSession {
       this.audioEl = el;
     }
     this.audioEl.srcObject = stream;
+    // Route remote audio to the user's chosen output device. Only
+    // supported on Chromium + recent WebKit; failures are silent on
+    // Safari iOS / older browsers.
+    if (this._outputDeviceId && typeof this.audioEl.setSinkId === "function") {
+      this.audioEl.setSinkId(this._outputDeviceId).catch((e) => {
+        this.log(`setSinkId failed: ${e.message || e}`);
+      });
+    }
 
     // Tap the same stream for envelope analysis (jaw motion).
     const ctx = new (window.AudioContext || window.webkitAudioContext)();

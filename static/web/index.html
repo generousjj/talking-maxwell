@@ -82,6 +82,17 @@
         </label>
       </div>
 
+      <div class="row gap wrap" id="audioDeviceRow">
+        <label class="inline" title="Microphone used for your voice. Changes take effect on the next Start.">
+          Input
+          <select id="micDeviceSelect"></select>
+        </label>
+        <label class="inline" title="Speaker Maxwell's voice is routed to. Changes apply live.">
+          Output
+          <select id="outputDeviceSelect"></select>
+        </label>
+      </div>
+
       <div class="row gap wrap" id="realtimeControls">
         <button id="rtStartBtn" disabled>Start realtime</button>
         <button id="rtStopBtn" class="ghost" disabled>End session</button>

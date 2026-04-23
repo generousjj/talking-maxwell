@@ -179,6 +179,26 @@
     text-align: center; color: var(--maxwell-brown);
     opacity: .6; padding: 1rem; font-size: .95rem;
   }
+  .device-row {
+    display: flex; flex-direction: column; gap: .5rem;
+    margin-top: .75rem;
+  }
+  .device-row label {
+    display: flex; flex-direction: column; gap: .25rem;
+    font-size: .85rem; font-weight: 600;
+    color: var(--maxwell-brown);
+  }
+  .device-row select {
+    font-family: inherit; font-size: .95rem;
+    padding: .5rem .75rem;
+    border-radius: 14px;
+    border: 2px solid #ede9fe;
+    background: #faf9ff;
+    color: var(--maxwell-brown-2);
+    font-weight: 500;
+    max-width: 100%;
+  }
+  .device-row select:disabled { opacity: .5; }
   footer {
     text-align: center; margin-top: 1.25rem;
     font-size: .85rem; color: var(--maxwell-brown); opacity: .65;
@@ -211,6 +231,15 @@
     speak. Use <b>Push-to-talk</b> in noisy rooms (hold the button or the spacebar
     to talk).
   </p>
+
+  <div class="device-row">
+    <label>Microphone
+      <select id="micDeviceSelect"></select>
+    </label>
+    <label>Speaker
+      <select id="outputDeviceSelect"></select>
+    </label>
+  </div>
 </section>
 
 <section class="card">

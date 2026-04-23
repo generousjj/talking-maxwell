@@ -11,6 +11,12 @@ import { MotionScheduler } from "./motion.js";
 import { RealtimeSession } from "./realtime.js";
 import { TypedSession } from "./typed.js";
 import { LiveSpeakingContext } from "./live_speaking_context.js";
+import {
+  listAudioDevices,
+  renderDeviceSelect,
+  persistSelectTo,
+  outputPickerSupported,
+} from "./audio_devices.js";
 
 // ---- auth gate ----
 (async () => {
@@ -277,6 +283,44 @@ $("modeSelect").addEventListener("change", applyMode);
 $("micMode").addEventListener("change", applyMicMode);
 applyMode();
 
+// ---- audio device pickers ----
+const MIC_DEVICE_KEY = "maxwell:operator:mic";
+const OUT_DEVICE_KEY = "maxwell:operator:output";
+const micSelect = $("micDeviceSelect");
+const outSelect = $("outputDeviceSelect");
+
+async function refreshAudioDeviceLists() {
+  const { inputs, outputs } = await listAudioDevices();
+  renderDeviceSelect(micSelect, inputs, MIC_DEVICE_KEY, { defaultLabel: "System default microphone" });
+  if (outputPickerSupported()) {
+    renderDeviceSelect(outSelect, outputs, OUT_DEVICE_KEY, { defaultLabel: "System default speaker" });
+  } else {
+    // Browser won't let us re-route output; show the select disabled
+    // with a hint rather than silently pretending it works.
+    outSelect.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(output routing not supported in this browser)";
+    outSelect.appendChild(opt);
+    outSelect.disabled = true;
+  }
+}
+refreshAudioDeviceLists();
+// Browser only hands us device labels after mic permission is granted,
+// and the list changes whenever someone plugs in headphones. Re-render
+// on both events so the dropdowns stay accurate.
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => refreshAudioDeviceLists());
+}
+persistSelectTo(MIC_DEVICE_KEY, micSelect);
+persistSelectTo(OUT_DEVICE_KEY, outSelect, async (deviceId) => {
+  // Apply to a live session immediately so users can audition speakers
+  // without restarting realtime.
+  if (rt && rt.isRunning() && typeof rt.setOutputDevice === "function") {
+    await rt.setOutputDevice(deviceId);
+  }
+});
+
 // ---- realtime ----
 $("rtStartBtn").addEventListener("click", async () => {
   if (rt && rt.isRunning()) return;
@@ -292,7 +336,12 @@ $("rtStartBtn").addEventListener("click", async () => {
     await rt.start({
       voice: $("voiceSelect").value,
       pttMode: $("micMode").value === "ptt",
+      micDeviceId: micSelect.value || "",
+      outputDeviceId: outSelect.value || "",
     });
+    // Now that we've actually held the mic once, device labels are
+    // populated — re-render so the dropdowns show real names.
+    refreshAudioDeviceLists();
     behavior.setState("listening");
     $("rtStopBtn").disabled = false;
     $("rtStartBtn").disabled = true;
