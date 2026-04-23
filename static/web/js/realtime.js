@@ -59,6 +59,14 @@ export class RealtimeSession {
     // `output_audio_buffer.stopped` isn't emitted by the WebRTC peer.
     this._lastLoudAt = 0;
     this._speakingSince = 0;
+    // PTT bookkeeping: track when the user started holding and whether
+    // an assistant response is currently in flight, so we don't commit
+    // empty buffers or stack `response.create` on top of an unfinished
+    // turn. Without these guards, rapid taps spam:
+    //   input_audio_buffer_commit_empty (0.00 ms buffered)
+    //   conversation_already_has_active_response
+    this._pttDownAt = 0;
+    this._responseActive = false;
   }
 
   isRunning() { return this._running; }
@@ -143,6 +151,8 @@ export class RealtimeSession {
 
   async stop() {
     this._running = false;
+    this._responseActive = false;
+    this._pttDownAt = 0;
     this._pendingAssistant = "";
     this._pendingUser = "";
     try { if (this.dc && this.dc.readyState === "open") this.dc.close(); } catch (_) {}
@@ -167,19 +177,42 @@ export class RealtimeSession {
   pttDown() {
     this._pttMode = true;
     if (!this.micStream) return;
+    this._pttDownAt = Date.now();
     for (const t of this.micStream.getAudioTracks()) t.enabled = true;
     this._micEnabled = true;
-    // Clear server buffer and cancel any in-flight response on barge-in.
     this._dcSend({ type: "input_audio_buffer.clear" });
-    this._dcSend({ type: "response.cancel" });
+    // Only cancel if a response is actually in progress — sending
+    // `response.cancel` with nothing to cancel is harmless, but the
+    // server still echoes back a "nothing to cancel" error on some
+    // builds. Tracked via _responseActive which is flipped by
+    // response.created / response.done messages.
+    if (this._responseActive) {
+      this._dcSend({ type: "response.cancel" });
+      this._responseActive = false;
+    }
   }
 
   pttUp() {
     if (!this.micStream) return;
-    this._dcSend({ type: "input_audio_buffer.commit" });
-    this._dcSend({ type: "response.create" });
     for (const t of this.micStream.getAudioTracks()) t.enabled = false;
     this._micEnabled = false;
+    // If the hold was too short (< 150 ms) we almost certainly don't
+    // have 100 ms of audio buffered server-side yet. Committing in
+    // that case triggers `input_audio_buffer_commit_empty`. Just clear
+    // the buffer and bail — no new response for this tap.
+    const heldMs = this._pttDownAt ? (Date.now() - this._pttDownAt) : 0;
+    this._pttDownAt = 0;
+    if (heldMs < 150) {
+      this._dcSend({ type: "input_audio_buffer.clear" });
+      return;
+    }
+    // Don't stack another response on top of one that's already in
+    // flight — the server will reject it with
+    // `conversation_already_has_active_response`.
+    if (this._responseActive) return;
+    this._dcSend({ type: "input_audio_buffer.commit" });
+    this._dcSend({ type: "response.create" });
+    this._responseActive = true;
   }
 
   // --- internals ---
@@ -230,8 +263,11 @@ export class RealtimeSession {
       this.behavior && this.behavior.setState("listening");
       this.onState("listening");
     } else if (t === "response.created") {
+      this._responseActive = true;
       this.behavior && this.behavior.setState("thinking");
       this.onState("thinking");
+    } else if (t === "response.done" || t === "response.cancelled" || t === "response.failed") {
+      this._responseActive = false;
     } else if (t === "response.audio.delta" || t === "output_audio_buffer.started") {
       // Enter SPEAKING as soon as audio starts flowing. We stay here
       // until either the WebRTC output buffer actually drains OR the

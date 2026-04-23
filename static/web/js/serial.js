@@ -104,6 +104,21 @@ export class WebSerialTransport {
     this._startReaderLoop();
     this._setState({ connected: true, phase: "handshake" });
 
+    // Match pyserial's dsrdtr=False/rtscts=False behavior as closely
+    // as we can: deassert DTR and RTS, then give the ESP32 time to
+    // finish booting and send its startup `btngoHSK` banner. Without
+    // this pause, our first hRQ races the firmware boot and we time
+    // out waiting for a reply. setSignals throws on some platforms
+    // (Linux, some drivers); treat that as non-fatal.
+    try {
+      if (port.setSignals) {
+        await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+      }
+    } catch (e) {
+      this.log(`setSignals not supported: ${e.message || e}`);
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+
     try {
       await this._handshake();
       await this._registerAllServos("initial");
@@ -232,7 +247,11 @@ export class WebSerialTransport {
             this.log(`re-register failed: ${e.message || e}`));
         }
       }
-      // Resolve any waiter
+      // Remember the most recent HSK so a handshake attempt that
+      // started after the firmware already spoke can consume it
+      // instead of timing out waiting for another one.
+      this._lastHSKParsed = parsed;
+      this._lastHSKParsedAt = Date.now();
       const w = this._pendingHSK;
       if (w) { this._pendingHSK = null; w.resolve(parsed); }
     } else if (parsed.type === "ok") {
@@ -242,15 +261,36 @@ export class WebSerialTransport {
   }
 
   async _handshake() {
-    for (let attempt = 0; attempt < 6; attempt++) {
+    // Opening the Web Serial port typically toggles DTR, which resets
+    // the ESP32 on most boards. The firmware prints BOOT and then an
+    // unsolicited `btngoHSK` line during startup. If we blast hRQ at
+    // it immediately, the firmware isn't listening yet and the boot
+    // banner is gone by the time our first _waitForHSK is armed — so
+    // wait a beat, then if a fresh-enough HSK was already seen from
+    // the boot banner, accept that as the handshake.
+    if (this._lastHSKParsedAt && (Date.now() - this._lastHSKParsedAt) < 2500) {
+      return;
+    }
+    // Try a generous total budget (8s) with slightly longer per-attempt
+    // waits so slow CH340/CP210x boards that are still resetting get a
+    // chance to reply.
+    const deadline = Date.now() + 8000;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      attempt += 1;
       const rand = (Math.random() * 1_000_000_000) | 0;
       await this._write(cmd.handshake(rand));
       try {
-        await this._waitForHSK(1200);
+        await this._waitForHSK(1500);
         return;
-      } catch (_) { /* retry */ }
+      } catch (_) {
+        // If an HSK arrived *just* before we armed the waiter, accept it.
+        if (this._lastHSKParsedAt && (Date.now() - this._lastHSKParsedAt) < 1500) {
+          return;
+        }
+      }
     }
-    throw new Error("handshake timeout");
+    throw new Error(`handshake timeout after ${attempt} attempt(s)`);
   }
 
   _waitForHSK(ms) {
