@@ -72,7 +72,11 @@ const speakingCtx = new LiveSpeakingContext({ envelopeFollower: envelope });
 let transport = null;
 
 let motionConfig = null;
-(async () => {
+// Resolved once we've applied (or given up on) the server-side
+// config.yaml. Downstream code (motion sliders) chains onto this
+// so the user's localStorage overrides land *after* the config
+// defaults, not before.
+const motionConfigReady = (async () => {
   try {
     const m = await apiJson("/api/web/motion-config", { method: "GET" });
     if (m && m.ok) {
@@ -123,9 +127,63 @@ persistSelectTo(OUT_DEVICE_KEY, $("outputDeviceSelect"), async (deviceId) => {
   }
 });
 
+// ---- motion sliders (mirrors the operator page controls) ----
+// Stored in localStorage so a single booth laptop keeps the guest's
+// last tuning across refreshes.
+
+const MOTION_PREFS_KEY = "maxwell:admits:motion";
+
+function setSliderDisplay(id, value) {
+  const el = $(id + "Val");
+  if (el) el.textContent = Number(value).toFixed(id === "jawGain" ? 1 : 2);
+}
+
+function applyJawGain(v) { envelope.setCalibration({ gain: v }); setSliderDisplay("jawGain", v); }
+function applyWingStrength(v) { behavior.updateGains({ wingStrength: v }); setSliderDisplay("wingStrength", v); }
+function applyHeadDrift(v) {
+  behavior.updateGains({ headLrDrift: v, headUdDrift: v * 0.7 });
+  setSliderDisplay("headDrift", v);
+}
+
+function saveMotionPrefs() {
+  try {
+    const p = {
+      jawGain: $("jawGain").value,
+      wingStrength: $("wingStrength").value,
+      headDrift: $("headDrift").value,
+    };
+    localStorage.setItem(MOTION_PREFS_KEY, JSON.stringify(p));
+  } catch (_) {}
+}
+
+function loadMotionPrefs() {
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(MOTION_PREFS_KEY) || "{}"); } catch (_) {}
+  if (p.jawGain != null)      { $("jawGain").value = p.jawGain;           applyJawGain(parseFloat(p.jawGain)); }
+  else                        {                                          applyJawGain(parseFloat($("jawGain").value)); }
+  if (p.wingStrength != null) { $("wingStrength").value = p.wingStrength; applyWingStrength(parseFloat(p.wingStrength)); }
+  else                        {                                          applyWingStrength(parseFloat($("wingStrength").value)); }
+  if (p.headDrift != null)    { $("headDrift").value = p.headDrift;       applyHeadDrift(parseFloat(p.headDrift)); }
+  else                        {                                          applyHeadDrift(parseFloat($("headDrift").value)); }
+}
+
+$("jawGain").addEventListener("input", (e) => applyJawGain(parseFloat(e.target.value)));
+$("wingStrength").addEventListener("input", (e) => applyWingStrength(parseFloat(e.target.value)));
+$("headDrift").addEventListener("input", (e) => applyHeadDrift(parseFloat(e.target.value)));
+["jawGain", "wingStrength", "headDrift"].forEach(id =>
+  $(id).addEventListener("change", saveMotionPrefs));
+
+// Apply slider prefs only after server-side motion config has landed,
+// otherwise the async config fetch would clobber the user's saved
+// values on every page load.
+motionConfigReady.then(() => loadMotionPrefs());
+
 // ---- realtime session ----
 
-let micMode = "auto";   // "auto" or "ptt"
+let micMode = "ptt";   // "auto" or "ptt" — PTT is the guest default
+                       // because the fair floor is loud and Maxwell
+                       // kept hearing his own voice / bystanders on
+                       // auto-VAD.
 let rt = null;
 let serialReady = false;
 let ptt = false;
