@@ -55,6 +55,7 @@ export class WebSerialTransport {
     this._pendingOks = [];
     this._lastHSKAt = 0;
     this._readerClosed = false;
+    this._manualMode = false;
   }
 
   static isSupported() { return typeof navigator !== "undefined" && "serial" in navigator; }
@@ -156,11 +157,45 @@ export class WebSerialTransport {
     this._setState({ connected: false, phase: "closed" });
   }
 
+  // Manual (posing) mode: deregister every effector so the firmware
+  // stops driving PWM. On typical servo setups that releases torque
+  // and lets you hand-position the linkages without fighting the
+  // motors. Call setManualMode(false) to re-register and resume.
+  async setManualMode(enabled) {
+    if (!this._connected) return;
+    const want = !!enabled;
+    if (want === this._manualMode) return;
+    this._manualMode = want;
+    if (want) {
+      try { await this._sendAndWaitOk(cmd.clearAllCurves()); } catch (_) {}
+      try { await this._sendAndWaitOk(cmd.deregisterAll()); } catch (e) {
+        this.log(`manual mode enable failed: ${e.message || e}`);
+        this._manualMode = false;
+        return;
+      }
+      this._lastSent = Object.create(null);
+      this.log("manual mode: servos released (move by hand)");
+    } else {
+      try {
+        await this._registerAllServos("manual-mode-off");
+        this.log("manual mode off: servos re-engaged");
+      } catch (e) {
+        this.log(`manual mode disable failed: ${e.message || e}`);
+      }
+    }
+  }
+
+  isManualMode() { return !!this._manualMode; }
+
   // Motion tick: frame is { jaw, head_lr, head_ud, wing } in [0,1].
   // Coalesce: only send the channels that changed materially to keep
   // the serial line below ~30 lines/s total.
   async sendFrame(frame) {
     if (!this._connected) return;
+    // In manual mode we've deregistered every effector; sCI writes
+    // would either be ignored by the firmware or re-arm the servos
+    // and fight the user's hand. Just drop the frame.
+    if (this._manualMode) return;
     const writes = [];
     for (const [name, ch] of Object.entries(this.channels)) {
       let v = frame[name];
@@ -367,8 +402,16 @@ export class MockTransport {
     this._connected = false;
     this.onState({ connected: false, phase: "closed", mock: true });
   }
-  async sendFrame(f) { this.lastFrame = { ...this.lastFrame, ...f }; }
+  async sendFrame(f) {
+    if (this._manualMode) return;
+    this.lastFrame = { ...this.lastFrame, ...f };
+  }
   async wakeSweep() { this.log("mock wake sweep"); }
   async center() { this.lastFrame = { jaw: 0, head_lr: 0.5, head_ud: 0.5, wing: 0 }; }
   async safeStop() {}
+  async setManualMode(enabled) {
+    this._manualMode = !!enabled;
+    this.log(this._manualMode ? "mock: manual mode on" : "mock: manual mode off");
+  }
+  isManualMode() { return !!this._manualMode; }
 }

@@ -102,6 +102,7 @@ function setSerialState(s) {
     $("wakeBtn").disabled = false;
     $("centerBtn").disabled = false;
     $("stopBtn").disabled = false;
+    $("manualModeBtn").disabled = false;
     $("rtStartBtn").disabled = false;
     $("typedSendBtn").disabled = false;
     serialState = "connected";
@@ -118,6 +119,10 @@ function setSerialState(s) {
     $("wakeBtn").disabled = true;
     $("centerBtn").disabled = true;
     $("stopBtn").disabled = true;
+    // Manual mode only makes sense while connected; un-check it so
+    // reconnects always start in driven mode.
+    $("manualModeBtn").disabled = true;
+    $("manualModeBtn").checked = false;
     serialState = "disconnected";
   }
 }
@@ -191,6 +196,22 @@ $("centerBtn").addEventListener("click", async () => {
 });
 $("stopBtn").addEventListener("click", async () => {
   if (transport && transport.isConnected()) await transport.safeStop();
+});
+$("manualModeBtn").addEventListener("change", async (ev) => {
+  const want = ev.target.checked;
+  if (!transport || !transport.isConnected()) {
+    ev.target.checked = false;
+    return;
+  }
+  ev.target.disabled = true;
+  try {
+    await transport.setManualMode(want);
+  } catch (e) {
+    log(`manual mode toggle failed: ${e.message || e}`);
+    ev.target.checked = !want;
+  } finally {
+    ev.target.disabled = false;
+  }
 });
 
 // ---- sliders ----
