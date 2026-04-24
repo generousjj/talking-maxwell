@@ -199,14 +199,33 @@ export class RealtimeSession {
     for (const t of this.micStream.getAudioTracks()) t.enabled = true;
     this._micEnabled = true;
     this._dcSend({ type: "input_audio_buffer.clear" });
-    // Only cancel if a response is actually in progress — sending
-    // `response.cancel` with nothing to cancel is harmless, but the
-    // server still echoes back a "nothing to cancel" error on some
-    // builds. Tracked via _responseActive which is flipped by
-    // response.created / response.done messages.
+
+    // ---- barge-in ----
+    // If Maxwell is mid-response (either still generating OR already
+    // playing audio out of the local jitter buffer), treat this press
+    // as an interruption. We need to stop three things independently:
+    //   1) the server's response generator       -> response.cancel
+    //   2) the server's output audio queue       -> output_audio_buffer.clear
+    //   3) whatever is already buffered locally  -> mute the <audio>
+    // #3 matters because WebRTC keeps a jitter buffer of already-
+    // delivered frames; without this the user hears ~200 ms of
+    // Maxwell blaring on top of their own voice after they press.
+    const wasSpeaking = this.behavior && this.behavior.state === "speaking";
     if (this._responseActive) {
       this._dcSend({ type: "response.cancel" });
       this._responseActive = false;
+    }
+    if (wasSpeaking) {
+      this._dcSend({ type: "output_audio_buffer.clear" });
+      if (this.audioEl) {
+        try { this.audioEl.muted = true; } catch (_) {}
+      }
+      // Flip the behavior engine out of speaking so the jaw stops
+      // chomping along with the now-muted audio.
+      if (this.behavior) {
+        this.behavior.setState("listening");
+        this.onState("listening");
+      }
     }
   }
 
@@ -303,6 +322,12 @@ export class RealtimeSession {
       this.onState("speaking");
       if (!wasSpeaking) this._speakingSince = performance.now();
       this._lastLoudAt = performance.now();
+      // Clear the barge-in mute so this reply is audible. (pttDown
+      // muted the <audio> element to kill whatever was still in the
+      // jitter buffer from the previous turn.)
+      if (this.audioEl && this.audioEl.muted) {
+        try { this.audioEl.muted = false; } catch (_) {}
+      }
     } else if (t === "output_audio_buffer.stopped" || t === "output_audio_buffer.cleared") {
       this.behavior && this.behavior.setState("listening");
       this.onState("listening");
