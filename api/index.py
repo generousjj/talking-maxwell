@@ -199,7 +199,19 @@ app.add_middleware(AuthAndOriginMiddleware)
 # --------------------------------------------------------------------
 
 if STATIC_DIR.is_dir():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    # Subclass StaticFiles so JS/CSS files never get stuck in stale
+    # browser/CDN caches. We change these files on most deploys and
+    # the symptom of a cached bundle is genuinely confusing
+    # ("realtime is broken!" when in fact the new build fixed it).
+    class _NoStoreStaticFiles(StaticFiles):
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+            if ext in {"js", "mjs", "css", "html"}:
+                resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return resp
+
+    app.mount("/static", _NoStoreStaticFiles(directory=str(STATIC_DIR)), name="static")
 else:
     log.warning("static dir missing: %s", STATIC_DIR)
 

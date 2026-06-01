@@ -30,6 +30,24 @@ export class TypedSession {
     this.onState("thinking");
     this.behavior && this.behavior.setState("thinking");
 
+    // Pre-warm the AudioContext while we're still inside the click/
+    // keypress user-gesture window. The `await apiJson(...)` below
+    // breaks the gesture chain, so if we leave context creation for
+    // _speakMp3 it lands in the "suspended" state — audio never
+    // actually plays AND the analyser reads silence, which is what
+    // was making the jaw sit at 0 the entire reply.
+    try {
+      if (!this.audioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) this.audioCtx = new AC();
+      }
+      if (this.audioCtx && this.audioCtx.state === "suspended") {
+        await this.audioCtx.resume().catch(() => {});
+      }
+    } catch (e) {
+      this.log(`audio ctx setup: ${e.message || e}`);
+    }
+
     let resp;
     try {
       resp = await apiJson("/api/web/typed", {
@@ -52,6 +70,13 @@ export class TypedSession {
       this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
     const ctx = this.audioCtx;
+    // Belt-and-braces resume in case send()'s pre-warm path didn't
+    // run (e.g. very first send queued before the AudioContext class
+    // was available).
+    if (ctx.state === "suspended") {
+      try { await ctx.resume(); } catch (_) {}
+    }
+    this.log(`typed: audio ctx state=${ctx.state}`);
     const buf = await ctx.decodeAudioData(bytes.buffer.slice(0));
 
     const src = ctx.createBufferSource();
