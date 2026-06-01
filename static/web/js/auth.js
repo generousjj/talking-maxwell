@@ -19,7 +19,16 @@ export async function apiJson(path, { method = "GET", body = null, signal } = {}
     json = await resp.json();
   } catch (_) {}
   if (!resp.ok) {
-    const err = new Error((json && (json.error || json.message)) || `HTTP ${resp.status}`);
+    // Build a useful message: the backend usually returns
+    // { ok:false, error:"openai_error", detail:"<openai message>" }
+    // for upstream failures, so prefer detail when present.
+    let msg = `HTTP ${resp.status}`;
+    if (json) {
+      if (json.detail) msg = `${json.error || "error"}: ${json.detail}`;
+      else if (json.error) msg = json.error;
+      else if (json.message) msg = json.message;
+    }
+    const err = new Error(msg);
     err.status = resp.status;
     err.body = json;
     throw err;

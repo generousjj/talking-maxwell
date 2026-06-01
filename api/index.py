@@ -378,8 +378,27 @@ async def realtime_session(request: Request):
         )
     if resp.status_code >= 400:
         log.warning("OpenAI realtime session failed: %s %s", resp.status_code, resp.text[:400])
+        # Surface the OpenAI error body to the browser log so the
+        # operator can actually see what failed (auth, deprecated
+        # endpoint, model not enabled, etc.) instead of an opaque
+        # "openai_error" string.
+        detail = resp.text[:400] if resp.text else ""
+        try:
+            j = resp.json()
+            if isinstance(j, dict) and "error" in j and isinstance(j["error"], dict):
+                msg = j["error"].get("message") or ""
+                code = j["error"].get("code") or j["error"].get("type") or ""
+                if msg:
+                    detail = f"{code}: {msg}" if code else msg
+        except Exception:  # noqa: BLE001
+            pass
         return JSONResponse(
-            {"ok": False, "error": "openai_error", "status": resp.status_code},
+            {
+                "ok": False,
+                "error": "openai_error",
+                "status": resp.status_code,
+                "detail": detail,
+            },
             status_code=502,
         )
     try:

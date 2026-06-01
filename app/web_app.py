@@ -166,8 +166,23 @@ async def handle_realtime_session(request: web.Request) -> web.Response:
                 log.warning(
                     "OpenAI realtime session failed: %s %s", resp.status, raw[:400]
                 )
+                detail = raw[:400] if raw else ""
+                try:
+                    j = json.loads(raw)
+                    if isinstance(j, dict) and isinstance(j.get("error"), dict):
+                        msg = j["error"].get("message") or ""
+                        code = j["error"].get("code") or j["error"].get("type") or ""
+                        if msg:
+                            detail = f"{code}: {msg}" if code else msg
+                except Exception:  # noqa: BLE001
+                    pass
                 return web.json_response(
-                    {"ok": False, "error": "openai_error", "status": resp.status},
+                    {
+                        "ok": False,
+                        "error": "openai_error",
+                        "status": resp.status,
+                        "detail": detail,
+                    },
                     status=502,
                 )
             try:
