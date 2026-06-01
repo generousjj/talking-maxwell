@@ -276,6 +276,11 @@ let autoMode = false;
 let fillerTimer = 0;
 let fillerAttempts = 0;
 let lastFillerQuery = "";
+// Played-track history so Prev/Next navigate like a playlist; "Next" at
+// the end of history generates a fresh random pick.
+let fillerHistory = [];
+let fillerPos = -1;
+let fillerPaused = false;
 // Curated musical-theater search terms. Title + show keeps the search
 // tight so we land on the right cast/soundtrack recording (which is what
 // has playable previews). Picked for broad recognizability at the booth.
@@ -764,6 +769,26 @@ function driveMotion() {
   rafId = requestAnimationFrame(driveMotion);
 }
 
+// Pause/resume keep the clip's position + timeline intact (unlike
+// stopPlayback, which tears everything down and resets state). Used by
+// the Showtime pause button.
+function pausePlayback() {
+  if (!playing) return;
+  playing = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+  if (audioEl) { try { audioEl.pause(); } catch (_) {} }
+  behavior.setState("idle");
+  speakingCtx.updateFromRms(0);
+}
+
+function resumePlayback() {
+  if (playing || !timeline || !audioEl) return;
+  behavior.setState("speaking");
+  playing = true;
+  audioEl.play().catch(() => {});
+  driveMotion();
+}
+
 function stopPlayback() {
   playing = false;
   if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
@@ -823,8 +848,63 @@ function scheduleNextFiller(delayMs) {
   if (!autoMode) return;
   fillerTimer = setTimeout(() => {
     fillerTimer = 0;
-    playRandomFiller();
+    advanceFiller();
   }, delayMs == null ? 900 : delayMs);
+}
+
+// Move forward: replay the next track in history if the operator had
+// stepped back, otherwise generate a fresh random pick.
+function advanceFiller() {
+  if (!autoMode) return;
+  if (fillerPos < fillerHistory.length - 1) {
+    fillerPos += 1;
+    updateShowtimeControls();
+    selectTrack(fillerHistory[fillerPos], { auto: true });
+  } else {
+    playRandomFiller();
+  }
+}
+
+function prevFiller() {
+  if (!autoMode || fillerPos <= 0) return;
+  if (fillerTimer) { clearTimeout(fillerTimer); fillerTimer = 0; }
+  fillerPaused = false;
+  setPauseLabel();
+  fillerPos -= 1;
+  updateShowtimeControls();
+  selectTrack(fillerHistory[fillerPos], { auto: true });
+}
+
+function nextFiller() {
+  if (!autoMode) return;
+  if (fillerTimer) { clearTimeout(fillerTimer); fillerTimer = 0; }
+  fillerPaused = false;
+  setPauseLabel();
+  advanceFiller();
+}
+
+function togglePauseFiller() {
+  if (!autoMode) return;
+  if (playing) {
+    fillerPaused = true;
+    pausePlayback();
+    setStatus("Showtime paused.", "");
+  } else if (timeline) {
+    fillerPaused = false;
+    resumePlayback();
+    setStatus("Singing! \uD83C\uDFB6", "live");
+  }
+  setPauseLabel();
+}
+
+function setPauseLabel() {
+  const btn = $("pauseBtn");
+  if (btn) btn.textContent = fillerPaused ? "\u25B6 Resume" : "\u23F8 Pause";
+}
+
+function updateShowtimeControls() {
+  const prev = $("prevBtn");
+  if (prev) prev.disabled = !(fillerPos > 0);
 }
 
 async function playRandomFiller() {
@@ -851,6 +931,11 @@ async function playRandomFiller() {
   fillerAttempts = 0;
   renderResults(tracks);
   const track = tracks[Math.floor(Math.random() * tracks.length)];
+  // Append to history (dropping any forward entries from a Prev branch).
+  fillerHistory = fillerHistory.slice(0, fillerPos + 1);
+  fillerHistory.push(track);
+  fillerPos = fillerHistory.length - 1;
+  updateShowtimeControls();
   await selectTrack(track, { auto: true });
 }
 
@@ -858,6 +943,7 @@ async function setAutoMode(on) {
   autoMode = !!on;
   const tog = $("autoToggle");
   if (tog) tog.checked = autoMode;
+  $("showtimeControls").style.display = autoMode ? "flex" : "none";
   if (autoMode) {
     ensureAudioContext();
     if (!serialReady) {
@@ -868,15 +954,24 @@ async function setAutoMode(on) {
       try { await connectHardware({ requireUserGesture: true }); } catch (_) {}
     }
     fillerAttempts = 0;
+    fillerHistory = [];
+    fillerPos = -1;
+    fillerPaused = false;
+    setPauseLabel();
+    updateShowtimeControls();
     playRandomFiller();
   } else {
     if (fillerTimer) { clearTimeout(fillerTimer); fillerTimer = 0; }
+    fillerPaused = false;
     stopPlayback();
     setStatus("Showtime off. Pick a song or type something.", "");
   }
 }
 
 $("autoToggle").addEventListener("change", (e) => setAutoMode(e.target.checked));
+$("prevBtn").addEventListener("click", prevFiller);
+$("nextBtn").addEventListener("click", nextFiller);
+$("pauseBtn").addEventListener("click", togglePauseFiller);
 
 // ---- "make Maxwell talk" (typed speech when not singing) ----
 //

@@ -185,6 +185,20 @@
     background: linear-gradient(160deg, var(--maxwell-purple) 0%, var(--maxwell-purple-2) 100%); }
   .switch input:checked + .knob::before { transform: translateX(26px); }
 
+  .showtime-controls { display: flex; gap: .6rem; margin-top: 1rem; }
+  .st-btn {
+    flex: 1; font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 1rem;
+    padding: .6rem .5rem; border-radius: 14px; cursor: pointer;
+    border: 2px solid var(--maxwell-purple); color: var(--maxwell-purple-2);
+    background: white; transition: transform .08s, background .15s, color .15s;
+  }
+  .st-btn:hover { background: #f3f0ff; }
+  .st-btn:active { transform: translateY(2px); }
+  .st-btn:disabled { opacity: .4; cursor: not-allowed; }
+  #pauseBtn { color: white; border-color: var(--maxwell-purple-2);
+    background: linear-gradient(160deg, var(--maxwell-purple) 0%, var(--maxwell-purple-2) 100%); }
+  #pauseBtn:hover { background: linear-gradient(160deg, var(--maxwell-purple-2) 0%, var(--maxwell-blue-2) 100%); }
+
   /* ---- say something ---- */
   .say-row { display: flex; gap: .6rem; }
   #sayInput {
@@ -247,6 +261,11 @@
       <input type="checkbox" id="autoToggle">
       <span class="knob"></span>
     </label>
+  </div>
+  <div class="showtime-controls" id="showtimeControls" style="display:none;">
+    <button id="prevBtn" type="button" class="st-btn">‹ Prev</button>
+    <button id="pauseBtn" type="button" class="st-btn">⏸ Pause</button>
+    <button id="nextBtn" type="button" class="st-btn">Next ›</button>
   </div>
 </section>
 
