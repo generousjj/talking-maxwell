@@ -42,8 +42,6 @@ const $ = (id) => document.getElementById(id);
 // opens just before the sound, which reads as "in sync" once you add
 // serial + servo latency.
 const LOOK_AHEAD_S = 0.10;
-// Envelope timeline resolution (50 fps — finer than the 30 Hz motion tick).
-const HOP_S = 0.02;
 // Map the loud parts of the song to roughly speech-RMS scale. The
 // behavior envelope applies a fixed 6x gain internally (see
 // LiveSpeakingContext), so ~0.12 here lands near a full-but-not-pinned
@@ -339,83 +337,169 @@ function setupAudioElement(src) {
   applyOutputDevice(audioEl, dev);
 }
 
-// ---- offline vocal-envelope precompute ----
+// ---- offline vocal-envelope precompute (STFT vocal separation) ----
+//
+// A plain EQ can't tell a snare from a sung syllable — both have energy
+// in the 200 Hz-4 kHz "vocal band", which is why the jaw used to pop on
+// every drum hit. This does a light spectral separation instead, all
+// offline on the decoded 30s clip:
+//
+//   1. CENTER extraction: vocals are (almost always) panned dead-center,
+//      so per FFT bin we keep min(|L|,|R|) — the component common to both
+//      channels. Hard-panned guitars/synths/stereo reverb largely drop
+//      out.
+//   2. VOCAL-BAND weighting: emphasize ~300 Hz-3.5 kHz (vocal formants +
+//      presence), hard-cut sub-bass/kick (<150 Hz) and air/cymbals
+//      (>5.5 kHz).
+//   3. PERCUSSIVE suppression: drum hits are spectrally FLAT/broadband;
+//      sung notes are PEAKY/harmonic. We weight each frame by
+//      (1 - spectral_flatness), so kicks/snares/claps stop driving the
+//      jaw while sustained vocals keep it moving.
+//
+// It's not a neural separator, but it tracks "is someone singing right
+// now and how loud" far better than the band-pass did, and runs in well
+// under a second so playback still starts near-instantly.
+
+const FFT_SIZE = 2048;
+const FFT_HOP = 512;
 
 async function precomputeVocalEnvelope(audioBuf) {
   const sr = audioBuf.sampleRate;
   const len = audioBuf.length;
-
-  // Mid channel = (L + R) / 2. Vocals usually sit dead-center, so the
-  // mid channel already biases toward them and away from hard-panned
-  // instruments.
-  const mid = new Float32Array(len);
   const L = audioBuf.getChannelData(0);
-  if (audioBuf.numberOfChannels > 1) {
-    const R = audioBuf.getChannelData(1);
-    for (let i = 0; i < len; i++) mid[i] = 0.5 * (L[i] + R[i]);
-  } else {
-    mid.set(L);
+  const R = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : L;
+
+  const fft = makeFFT(FFT_SIZE);
+  const half = FFT_SIZE >> 1;
+  const win = hannWindow(FFT_SIZE);
+
+  // Per-bin vocal-band weight + which bins to include in the flatness
+  // (harmonic vs percussive) measure.
+  const binHz = sr / FFT_SIZE;
+  const bandW = new Float32Array(half);
+  let flatLo = half, flatHi = 0;
+  for (let k = 0; k < half; k++) {
+    const f = k * binHz;
+    bandW[k] = vocalBandWeight(f);
+    if (f >= 150 && f <= 5500) { if (k < flatLo) flatLo = k; if (k > flatHi) flatHi = k; }
   }
 
-  const band = await renderFiltered(mid, sr, len, [
-    { type: "highpass", frequency: 200, Q: 0.7 },
-    { type: "lowpass", frequency: 4000, Q: 0.7 },
-  ]);
-  // Low band ~ kick/bass that leaks into the vocal band's low edge; we
-  // sidechain a fraction of it out so a thumping kick doesn't drive the
-  // jaw.
-  const low = await renderFiltered(mid, sr, len, [
-    { type: "lowpass", frequency: 150, Q: 0.7 },
-  ]);
+  const reL = new Float32Array(FFT_SIZE), imL = new Float32Array(FFT_SIZE);
+  const reR = new Float32Array(FFT_SIZE), imR = new Float32Array(FFT_SIZE);
 
-  const hop = Math.max(1, Math.round(sr * HOP_S));
-  const n = Math.ceil(len / hop);
-  const raw = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const s0 = i * hop;
-    const s1 = Math.min(len, s0 + hop);
-    let sv = 0, sl = 0;
-    for (let j = s0; j < s1; j++) { sv += band[j] * band[j]; sl += low[j] * low[j]; }
-    const cnt = Math.max(1, s1 - s0);
-    const vr = Math.sqrt(sv / cnt);
-    const lr = Math.sqrt(sl / cnt);
-    raw[i] = Math.max(0, vr - 0.6 * lr);
+  const nFrames = Math.max(1, Math.floor((len - FFT_SIZE) / FFT_HOP) + 1);
+  const raw = new Float32Array(nFrames);
+
+  for (let fr = 0; fr < nFrames; fr++) {
+    const off = fr * FFT_HOP;
+    for (let i = 0; i < FFT_SIZE; i++) {
+      const w = win[i];
+      const s = off + i;
+      reL[i] = (s < len ? L[s] : 0) * w; imL[i] = 0;
+      reR[i] = (s < len ? R[s] : 0) * w; imR[i] = 0;
+    }
+    fft(reL, imL);
+    fft(reR, imR);
+
+    let bandEnergy = 0;
+    let logSum = 0, linSum = 0, flatN = 0;
+    for (let k = 1; k < half; k++) {
+      const magL = Math.hypot(reL[k], imL[k]);
+      const magR = Math.hypot(reR[k], imR[k]);
+      const centered = Math.min(magL, magR); // common (center-panned) part
+      const masked = centered * bandW[k];
+      bandEnergy += masked * masked;
+      if (k >= flatLo && k <= flatHi) {
+        const m = centered + 1e-9;
+        logSum += Math.log(m);
+        linSum += m;
+        flatN++;
+      }
+    }
+
+    // Spectral flatness in [0,1]: ~1 for flat/noisy (drums), ~0 for
+    // peaky/harmonic (voice). harmonicWeight emphasizes the latter.
+    let harmonicWeight = 1;
+    if (flatN > 0 && linSum > 0) {
+      const flatness = Math.exp(logSum / flatN) / (linSum / flatN);
+      harmonicWeight = Math.pow(Math.max(0, 1 - flatness), 1.5);
+    }
+    raw[fr] = Math.sqrt(bandEnergy) * harmonicWeight;
   }
 
-  // Robust normalize against the 95th percentile so loud and quiet
-  // songs both reach a full jaw swing, then gate the quiet bits to 0.
+  // Light 1-pole smoothing so the envelope tracks syllables, not every
+  // FFT frame.
+  for (let i = 1; i < nFrames; i++) raw[i] = 0.6 * raw[i] + 0.4 * raw[i - 1];
+
+  // Robust normalize against the 95th percentile, then gate the quiet
+  // bits (intros / instrumental breaks) fully closed.
   const sorted = Float32Array.from(raw).sort();
   const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] || 1e-6;
   const scale = p95 > 1e-6 ? TARGET_PEAK / p95 : 0;
-  const env = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
+  const env = new Float32Array(nFrames);
+  for (let i = 0; i < nFrames; i++) {
     let v = raw[i] * scale;
     if (v < GATE_FLOOR) v = 0;
     env[i] = v;
   }
-  return { env, hopSec: HOP_S };
+  return { env, hopSec: FFT_HOP / sr };
 }
 
-async function renderFiltered(samples, sr, len, filters) {
-  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const offline = new OAC(1, len, sr);
-  const buf = offline.createBuffer(1, len, sr);
-  buf.copyToChannel(samples, 0);
-  const src = offline.createBufferSource();
-  src.buffer = buf;
-  let node = src;
-  for (const f of filters) {
-    const biquad = offline.createBiquadFilter();
-    biquad.type = f.type;
-    biquad.frequency.value = f.frequency;
-    if (f.Q != null) biquad.Q.value = f.Q;
-    node.connect(biquad);
-    node = biquad;
+// Smooth vocal-band weight: raised-cosine ramps in at 150->300 Hz and
+// out at 3500->5500 Hz, flat (=1) across the formant/presence region.
+function vocalBandWeight(f) {
+  if (f <= 150 || f >= 5500) return 0;
+  if (f < 300) return 0.5 * (1 - Math.cos(Math.PI * (f - 150) / 150));
+  if (f > 3500) return 0.5 * (1 + Math.cos(Math.PI * (f - 3500) / 2000));
+  return 1;
+}
+
+function hannWindow(n) {
+  const w = new Float32Array(n);
+  for (let i = 0; i < n; i++) w[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1)));
+  return w;
+}
+
+// Compact iterative radix-2 Cooley-Tukey FFT. Returns a transform(re,im)
+// that operates in-place on Float32Array buffers of length n (n a power
+// of two). Twiddles + bit-reversal table are precomputed once per size.
+function makeFFT(n) {
+  const levels = Math.round(Math.log2(n));
+  const rev = new Uint32Array(n);
+  for (let i = 0; i < n; i++) {
+    let x = i, r = 0;
+    for (let j = 0; j < levels; j++) { r = (r << 1) | (x & 1); x >>= 1; }
+    rev[i] = r >>> 0;
   }
-  node.connect(offline.destination);
-  src.start();
-  const rendered = await offline.startRendering();
-  return rendered.getChannelData(0);
+  const cos = new Float32Array(n >> 1);
+  const sin = new Float32Array(n >> 1);
+  for (let i = 0; i < (n >> 1); i++) {
+    cos[i] = Math.cos((-2 * Math.PI * i) / n);
+    sin[i] = Math.sin((-2 * Math.PI * i) / n);
+  }
+  return function transform(re, im) {
+    for (let i = 0; i < n; i++) {
+      const j = rev[i];
+      if (j > i) {
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (let size = 2; size <= n; size <<= 1) {
+      const halfSize = size >> 1;
+      const step = n / size;
+      for (let i = 0; i < n; i += size) {
+        for (let j = i, k = 0; j < i + halfSize; j++, k += step) {
+          const tre = re[j + halfSize] * cos[k] - im[j + halfSize] * sin[k];
+          const tim = re[j + halfSize] * sin[k] + im[j + halfSize] * cos[k];
+          re[j + halfSize] = re[j] - tre;
+          im[j + halfSize] = im[j] - tim;
+          re[j] += tre;
+          im[j] += tim;
+        }
+      }
+    }
+  };
 }
 
 // ---- playback + motion drive ----
