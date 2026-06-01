@@ -68,12 +68,18 @@ const speakingCtx = new LiveSpeakingContext({ envelopeFollower: envelope });
 let transport = null;
 
 // Sing-mode playback state. Declared up here (before the scheduler) so
-// the scheduler's onFrame jaw-override can safely read them on its very
-// first tick. The jaw tracks the isolated VOCAL envelope while the rest
-// of the body (head bob + wing flaps + nods) dances to the full-mix
-// MUSIC envelope fed into the behavior engine.
+// the scheduler's onFrame override can safely read them on its very
+// first tick. The jaw tracks the isolated VOCAL envelope; the rest of
+// the body gets an explicit, energy-scaled "dance" overlay driven by the
+// full-mix MUSIC envelope (continuous sway/bob LFOs + beat-synced wing
+// pumps), because the conversational behavior engine's motion is far too
+// subtle to read as dancing.
+const TAU = Math.PI * 2;
 let playing = false;
 let jawSmoothed = 0;
+let danceLevel = 0;   // slow-moving overall music energy (sway amplitude)
+let danceBeat = 0;    // punchy per-beat energy (bob + wing pumps)
+const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 let motionConfig = null;
 const motionConfigReady = (async () => {
@@ -92,12 +98,21 @@ const scheduler = new MotionScheduler({
   behavior,
   transport: null,
   speakingContextProvider: () => speakingCtx.snapshot(performance.now() / 1000),
-  // While a song is playing, the behavior engine is driven by the full
-  // music mix (so head/wings dance to the beat), but the jaw should
-  // still mouth the *vocals*. Override jaw here, right before the frame
-  // is sent to the servos.
+  // While a song is playing we replace the body motion with an explicit
+  // dance: continuous sway/bob LFOs scaled by overall music energy, plus
+  // beat-synced wing pumps. The jaw still mouths the isolated vocals.
   onFrame: (frame) => {
-    if (playing) frame.jaw = Math.max(0, Math.min(1, jawSmoothed));
+    if (!playing) return;
+    const now = performance.now() / 1000;
+    // Baseline groove (0.4) so he's never frozen, scaling up with energy.
+    const amp = 0.4 + 0.6 * Math.min(1, danceLevel * 1.6);
+    const sway = 0.28 * amp * Math.sin(now * TAU * 0.6);            // head turn
+    const bob = 0.16 * amp * Math.sin(now * TAU * 1.3) + 0.22 * danceBeat; // head nod, punches on beats
+    const flap = Math.min(1, 0.25 + 0.9 * danceBeat) * (0.5 + 0.5 * Math.sin(now * TAU * 2.0));
+    frame.head_lr = clamp01(0.5 + sway);
+    frame.head_ud = clamp01(0.5 - bob);
+    frame.wing = clamp01(flap);
+    frame.jaw = clamp01(jawSmoothed);
   },
 });
 scheduler.start();
@@ -548,6 +563,8 @@ function startPlayback() {
   ensureAudioContext();
   envelope.reset();
   jawSmoothed = 0;
+  danceLevel = 0;
+  danceBeat = 0;
   behavior.setState("speaking");
   playing = true;
   $("playBtn").textContent = "Stop";
@@ -568,8 +585,11 @@ function driveMotion() {
   const musicV = (timeline.musicEnv && idx >= 0 && idx < timeline.musicEnv.length)
     ? timeline.musicEnv[idx] : 0;
 
-  // Body (head bob + wing flaps + nods) dances to the full music mix.
-  speakingCtx.updateFromRms(musicV);
+  // Dance energy: musicV is normalized so its loud parts sit near
+  // TARGET_PEAK, so musicV/TARGET_PEAK is ~1 on a strong beat.
+  const beat = Math.min(1.3, musicV / TARGET_PEAK);
+  danceBeat = Math.max(beat, danceBeat * 0.82);  // fast attack, punchy decay
+  danceLevel += 0.05 * (beat - danceLevel);      // slow overall energy
 
   // Jaw mouths the isolated vocals. Same attack/release as the jaw
   // envelope follower, with the live jaw-gain slider as the multiplier.
@@ -591,6 +611,8 @@ function stopPlayback() {
   behavior.setState("idle");
   envelope.reset();
   jawSmoothed = 0;
+  danceLevel = 0;
+  danceBeat = 0;
   speakingCtx.updateFromRms(0);
   $("progressBar").style.width = "0%";
   if (timeline) {
