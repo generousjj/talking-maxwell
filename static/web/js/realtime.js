@@ -384,6 +384,23 @@ export class RealtimeSession {
     src.connect(an);
     this.analyser = an;
     this._analysisBuf = new Float32Array(an.fftSize);
+    // Critical: the `track` event fires *after* the click's user-
+    // gesture window has expired, so this AudioContext starts in
+    // the "suspended" state under Chrome's autoplay policy. The
+    // <audio> element still plays audio (its own pipeline), but
+    // the AnalyserNode reads silence — that's why the envelope/jaw
+    // stayed at 0 even while Maxwell was clearly talking. We resume
+    // explicitly and re-resume on suspension (e.g. user briefly
+    // backgrounds the tab and comes back).
+    const tryResume = () => {
+      if (ctx.state === "suspended") {
+        ctx.resume().catch((e) => this.log(`audio ctx resume: ${e.message || e}`));
+      }
+    };
+    tryResume();
+    if (ctx.addEventListener) {
+      ctx.addEventListener("statechange", tryResume);
+    }
     // 50 Hz envelope updates is plenty for a servo; the behavior tick
     // runs at 30 Hz and picks up whatever the follower has smoothed.
     this._analysisTimer = setInterval(() => this._pumpEnvelope(), 20);
