@@ -440,11 +440,24 @@ export class RealtimeSession {
     const an = ctx.createAnalyser();
     an.fftSize = 1024;
     src.connect(an);
+    // Chrome quirk: a MediaStreamAudioSourceNode whose graph never
+    // reaches ctx.destination can silently stop producing samples
+    // even though the <audio> element plays just fine. Force the
+    // graph to be live by routing the analyser to destination
+    // through a gain of 0 — we don't want to actually double-output
+    // the audio (the <audio> element already plays it), we just
+    // need Web Audio to keep the pipeline pulling samples.
+    try {
+      const silent = ctx.createGain();
+      silent.gain.value = 0;
+      an.connect(silent);
+      silent.connect(ctx.destination);
+    } catch (e) {
+      this.log(`silent-tap setup: ${e.message || e}`);
+    }
     this.analyser = an;
     this._analysisBuf = new Float32Array(an.fftSize);
     this.log(`audio ctx state at analyser hookup: ${ctx.state}`);
-    // One-shot log when the envelope first goes above the noise floor
-    // so we can confirm the analyser actually sees audio.
     this._envFirstSeenLogged = false;
     // 50 Hz envelope updates is plenty for a servo; the behavior tick
     // runs at 30 Hz and picks up whatever the follower has smoothed.
@@ -459,7 +472,16 @@ export class RealtimeSession {
       this._envFirstSeenLogged = true;
       this.log(`first audio detected by analyser (rms=${rms.toFixed(4)})`);
     }
-    this.envelope.processRms(rms);
+    // Only own the envelope follower when we're actually the source
+    // of audio. If we're listening/thinking (no audio out from this
+    // session) and the user is exercising the typed pipeline in the
+    // same page, blindly writing 0 here would trample TypedSession's
+    // valid RMS samples 50 times a second and the jaw would never
+    // move while Maxwell talks via typed mode.
+    const isSpeaking = this.behavior && this.behavior.state === "speaking";
+    if (isSpeaking || rms > 0.005) {
+      this.envelope.processRms(rms);
+    }
     // Same RMS feeds the separate (higher-gain) behavior envelope.
     if (this.speakingContext) this.speakingContext.updateFromRms(rms);
 
