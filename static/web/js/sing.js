@@ -67,6 +67,14 @@ const behavior = new BehaviorEngine({ envelope, gains: DEFAULT_GAINS });
 const speakingCtx = new LiveSpeakingContext({ envelopeFollower: envelope });
 let transport = null;
 
+// Sing-mode playback state. Declared up here (before the scheduler) so
+// the scheduler's onFrame jaw-override can safely read them on its very
+// first tick. The jaw tracks the isolated VOCAL envelope while the rest
+// of the body (head bob + wing flaps + nods) dances to the full-mix
+// MUSIC envelope fed into the behavior engine.
+let playing = false;
+let jawSmoothed = 0;
+
 let motionConfig = null;
 const motionConfigReady = (async () => {
   try {
@@ -84,7 +92,13 @@ const scheduler = new MotionScheduler({
   behavior,
   transport: null,
   speakingContextProvider: () => speakingCtx.snapshot(performance.now() / 1000),
-  onFrame: () => {},
+  // While a song is playing, the behavior engine is driven by the full
+  // music mix (so head/wings dance to the beat), but the jaw should
+  // still mouth the *vocals*. Override jaw here, right before the frame
+  // is sent to the servos.
+  onFrame: (frame) => {
+    if (playing) frame.jaw = Math.max(0, Math.min(1, jawSmoothed));
+  },
 });
 scheduler.start();
 
@@ -202,9 +216,8 @@ connectHardware({ requireUserGesture: false });
 let actx = null;
 let audioEl = null;          // <audio> element for actual sound output
 let blobUrl = null;          // object URL backing the audio element
-let timeline = null;         // { env: Float32Array, hopSec }
+let timeline = null;         // { env, musicEnv, hopSec }
 let currentTrack = null;
-let playing = false;
 let rafId = 0;
 
 function ensureAudioContext() {
@@ -389,9 +402,19 @@ async function precomputeVocalEnvelope(audioBuf) {
 
   const nFrames = Math.max(1, Math.floor((len - FFT_SIZE) / FFT_HOP) + 1);
   const raw = new Float32Array(nFrames);
+  // Full-range "music" energy of the whole mix (all frequencies, incl.
+  // bass + drums). This is what makes the head/wings dance to the beat,
+  // separate from the vocal envelope that drives the jaw.
+  const musicRaw = new Float32Array(nFrames);
 
   for (let fr = 0; fr < nFrames; fr++) {
     const off = fr * FFT_HOP;
+    // Broadband mix RMS over this hop (time domain) for the dance.
+    let mixSq = 0, mixN = 0;
+    const hopEnd = Math.min(len, off + FFT_HOP);
+    for (let s = off; s < hopEnd; s++) { const m = 0.5 * (L[s] + R[s]); mixSq += m * m; mixN++; }
+    musicRaw[fr] = mixN ? Math.sqrt(mixSq / mixN) : 0;
+
     for (let i = 0; i < FFT_SIZE; i++) {
       const w = win[i];
       const s = off + i;
@@ -427,22 +450,35 @@ async function precomputeVocalEnvelope(audioBuf) {
     raw[fr] = Math.sqrt(bandEnergy) * harmonicWeight;
   }
 
-  // Light 1-pole smoothing so the envelope tracks syllables, not every
-  // FFT frame.
+  // Light 1-pole smoothing so the vocal envelope tracks syllables, not
+  // every FFT frame. The music envelope gets a snappier smoothing so the
+  // beat stays punchy for the dance.
   for (let i = 1; i < nFrames; i++) raw[i] = 0.6 * raw[i] + 0.4 * raw[i - 1];
+  for (let i = 1; i < nFrames; i++) musicRaw[i] = 0.5 * musicRaw[i] + 0.5 * musicRaw[i - 1];
 
-  // Robust normalize against the 95th percentile, then gate the quiet
-  // bits (intros / instrumental breaks) fully closed.
-  const sorted = Float32Array.from(raw).sort();
-  const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] || 1e-6;
+  // Jaw envelope: gate the quiet bits (intros / instrumental breaks)
+  // fully closed so the mouth doesn't flap when no one is singing.
+  const vocalEnv = normalizeEnvelope(raw, GATE_FLOOR);
+  // Music envelope: only a tiny gate so the body keeps dancing through
+  // purely instrumental sections.
+  const musicEnv = normalizeEnvelope(musicRaw, 0.006);
+  return { env: vocalEnv, musicEnv, hopSec: FFT_HOP / sr };
+}
+
+// Robust-normalize an energy array to TARGET_PEAK against its 95th
+// percentile, then gate values below `gate` to zero.
+function normalizeEnvelope(arr, gate) {
+  const n = arr.length;
+  const sorted = Float32Array.from(arr).sort();
+  const p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))] || 1e-6;
   const scale = p95 > 1e-6 ? TARGET_PEAK / p95 : 0;
-  const env = new Float32Array(nFrames);
-  for (let i = 0; i < nFrames; i++) {
-    let v = raw[i] * scale;
-    if (v < GATE_FLOOR) v = 0;
-    env[i] = v;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let v = arr[i] * scale;
+    if (v < gate) v = 0;
+    out[i] = v;
   }
-  return { env, hopSec: FFT_HOP / sr };
+  return out;
 }
 
 // Smooth vocal-band weight: raised-cosine ramps in at 150->300 Hz and
@@ -511,6 +547,7 @@ function startPlayback() {
   }
   ensureAudioContext();
   envelope.reset();
+  jawSmoothed = 0;
   behavior.setState("speaking");
   playing = true;
   $("playBtn").textContent = "Stop";
@@ -527,9 +564,21 @@ function driveMotion() {
   if (!playing) return;
   const t = (audioEl ? audioEl.currentTime : 0) + LOOK_AHEAD_S;
   const idx = Math.floor(t / timeline.hopSec);
-  const v = (idx >= 0 && idx < timeline.env.length) ? timeline.env[idx] : 0;
-  envelope.processRms(v);
-  speakingCtx.updateFromRms(v);
+  const vocalV = (idx >= 0 && idx < timeline.env.length) ? timeline.env[idx] : 0;
+  const musicV = (timeline.musicEnv && idx >= 0 && idx < timeline.musicEnv.length)
+    ? timeline.musicEnv[idx] : 0;
+
+  // Body (head bob + wing flaps + nods) dances to the full music mix.
+  speakingCtx.updateFromRms(musicV);
+
+  // Jaw mouths the isolated vocals. Same attack/release as the jaw
+  // envelope follower, with the live jaw-gain slider as the multiplier.
+  const cal = envelope.calibration;
+  const gain = cal.gain || 6.0;
+  const target = Math.min(1, vocalV * gain);
+  const coeff = Math.max(0, Math.min(1, target > jawSmoothed ? cal.attack : cal.release));
+  jawSmoothed += coeff * (target - jawSmoothed);
+
   const dur = (audioEl && audioEl.duration) || 30;
   $("progressBar").style.width = Math.min(100, 100 * (audioEl ? audioEl.currentTime : 0) / dur) + "%";
   rafId = requestAnimationFrame(driveMotion);
@@ -541,6 +590,7 @@ function stopPlayback() {
   if (audioEl) { try { audioEl.pause(); } catch (_) {} }
   behavior.setState("idle");
   envelope.reset();
+  jawSmoothed = 0;
   speakingCtx.updateFromRms(0);
   $("progressBar").style.width = "0%";
   if (timeline) {
