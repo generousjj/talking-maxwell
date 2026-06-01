@@ -271,6 +271,47 @@ let timeline = null;         // { env, musicEnv, hopSec }
 let currentTrack = null;
 let rafId = 0;
 
+// ---- showtime (auto-play filler) state ----
+let autoMode = false;
+let fillerTimer = 0;
+let fillerAttempts = 0;
+let lastFillerQuery = "";
+// Curated musical-theater search terms. Title + show keeps the search
+// tight so we land on the right cast/soundtrack recording (which is what
+// has playable previews). Picked for broad recognizability at the booth.
+const SHOWTIME_QUERIES = [
+  "Defying Gravity Wicked",
+  "Popular Wicked",
+  "Seasons of Love Rent",
+  "One Day More Les Miserables",
+  "I Dreamed a Dream Les Miserables",
+  "Bring Him Home Les Miserables",
+  "Alexander Hamilton",
+  "My Shot Hamilton",
+  "The Schuyler Sisters Hamilton",
+  "You'll Be Back Hamilton",
+  "Memory Cats musical",
+  "The Phantom of the Opera",
+  "Music of the Night Phantom",
+  "All That Jazz Chicago",
+  "Cabaret musical",
+  "Tomorrow Annie",
+  "Don't Rain on My Parade Funny Girl",
+  "Summer Nights Grease",
+  "You're the One That I Want Grease",
+  "You Can't Stop the Beat Hairspray",
+  "Tonight West Side Story",
+  "America West Side Story",
+  "Oklahoma musical",
+  "Some Enchanted Evening South Pacific",
+  "Waving Through a Window Dear Evan Hansen",
+  "Corner of the Sky Pippin",
+  "Sit Down You're Rockin' the Boat Guys and Dolls",
+  "Maybe This Time Cabaret",
+  "Suddenly Seymour Little Shop of Horrors",
+  "Stars Les Miserables",
+];
+
 function ensureAudioContext() {
   if (!actx) {
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -328,7 +369,10 @@ function renderResults(tracks) {
     meta.appendChild(artist);
     card.appendChild(img);
     card.appendChild(meta);
-    card.addEventListener("click", () => selectTrack(t));
+    card.addEventListener("click", () => {
+      if (autoMode) setAutoMode(false);
+      selectTrack(t);
+    });
     wrap.appendChild(card);
   }
 }
@@ -340,7 +384,7 @@ $("searchInput").addEventListener("keydown", (e) => {
 
 // ---- track selection: fetch + decode + precompute ----
 
-async function selectTrack(track) {
+async function selectTrack(track, { auto = false } = {}) {
   if (!track || !track.preview_url) return;
   stopPlayback();
   currentTrack = track;
@@ -379,11 +423,17 @@ async function selectTrack(track) {
 
     $("playBtn").disabled = false;
     $("playBtn").textContent = "Play";
-    setStatus(serialReady ? "Ready \u2014 hit play!" : "Connect Maxwell, then hit play.", "live");
+    if (auto && autoMode) {
+      startPlayback();
+    } else {
+      setStatus(serialReady ? "Ready \u2014 hit play!" : "Connect Maxwell, then hit play.", "live");
+    }
   } catch (e) {
     setStatus("Couldn't load that song: " + (e.message || e), "error");
     $("playBtn").disabled = true;
     $("playBtn").textContent = "Play";
+    // In showtime mode a bad clip shouldn't dead-end the loop — skip on.
+    if (auto && autoMode) scheduleNextFiller(1500);
   }
 }
 
@@ -395,7 +445,10 @@ function setupAudioElement(src) {
   audioEl = new Audio();
   audioEl.src = src;
   audioEl.preload = "auto";
-  audioEl.addEventListener("ended", () => stopPlayback());
+  audioEl.addEventListener("ended", () => {
+    stopPlayback();
+    if (autoMode) scheduleNextFiller();
+  });
   // Apply the chosen output device if the picker is supported.
   const dev = ($("outputDeviceSelect") && $("outputDeviceSelect").value) || "";
   applyOutputDevice(audioEl, dev);
@@ -748,6 +801,79 @@ function refreshPlayButton() {
   $("playBtn").disabled = false;
 }
 
+// ---- showtime mode: auto-play random musical-theater clips ----
+//
+// Booth filler: while the switch is on we search a random showtune,
+// pick a playable preview, decode + analyze it, and auto-play it.
+// When the clip ends we queue the next one. Any manual interaction
+// (picking a song, typing) flips the switch off so the operator can
+// take over instantly.
+
+function pickFillerQuery() {
+  let q = lastFillerQuery;
+  for (let i = 0; i < 6 && q === lastFillerQuery; i++) {
+    q = SHOWTIME_QUERIES[Math.floor(Math.random() * SHOWTIME_QUERIES.length)];
+  }
+  lastFillerQuery = q;
+  return q;
+}
+
+function scheduleNextFiller(delayMs) {
+  if (fillerTimer) { clearTimeout(fillerTimer); fillerTimer = 0; }
+  if (!autoMode) return;
+  fillerTimer = setTimeout(() => {
+    fillerTimer = 0;
+    playRandomFiller();
+  }, delayMs == null ? 900 : delayMs);
+}
+
+async function playRandomFiller() {
+  if (!autoMode) return;
+  const q = pickFillerQuery();
+  setStatus("Showtime \uD83C\uDFAD finding a clip\u2026", "busy");
+  let res;
+  try {
+    res = await apiJson("/api/web/song/search?q=" + encodeURIComponent(q) + "&limit=8");
+  } catch (e) {
+    if (autoMode) scheduleNextFiller(2000);
+    return;
+  }
+  if (!autoMode) return; // toggled off mid-request
+  const tracks = (res && res.tracks) || [];
+  if (!tracks.length) {
+    // This showtune had no playable preview; try another quickly, but
+    // back off after several misses so we don't hammer the API.
+    fillerAttempts += 1;
+    scheduleNextFiller(fillerAttempts < 6 ? 350 : 2000);
+    if (fillerAttempts >= 6) fillerAttempts = 0;
+    return;
+  }
+  fillerAttempts = 0;
+  renderResults(tracks);
+  const track = tracks[Math.floor(Math.random() * tracks.length)];
+  await selectTrack(track, { auto: true });
+}
+
+async function setAutoMode(on) {
+  autoMode = !!on;
+  const tog = $("autoToggle");
+  if (tog) tog.checked = autoMode;
+  if (autoMode) {
+    ensureAudioContext();
+    if (!serialReady) {
+      try { await connectHardware({ requireUserGesture: false }); } catch (_) {}
+    }
+    fillerAttempts = 0;
+    playRandomFiller();
+  } else {
+    if (fillerTimer) { clearTimeout(fillerTimer); fillerTimer = 0; }
+    stopPlayback();
+    setStatus("Showtime off. Pick a song or type something.", "");
+  }
+}
+
+$("autoToggle").addEventListener("change", (e) => setAutoMode(e.target.checked));
+
 // ---- "make Maxwell talk" (typed speech when not singing) ----
 //
 // Reuses the operator/admits TypedSession (LLM reply -> TTS mp3). We pass
@@ -783,6 +909,9 @@ async function sendSay() {
   const input = $("sayInput");
   const text = (input.value || "").trim();
   if (!text) return;
+  // Operator is taking over — kill showtime filler so it doesn't queue
+  // another clip on top of him talking.
+  if (autoMode) setAutoMode(false);
   // Don't talk over a song — stop singing first so the jaw is free.
   if (playing) stopPlayback();
   input.value = "";

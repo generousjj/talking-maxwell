@@ -172,6 +172,19 @@
     color: var(--maxwell-purple-2); min-width: 3.2rem; text-align: right; }
   .hint { font-size: .8rem; font-weight: 500; color: var(--maxwell-brown); opacity: .75; }
 
+  /* ---- showtime toggle ---- */
+  .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  .switch { position: relative; display: inline-block; width: 58px; height: 32px; flex: 0 0 auto; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .knob { position: absolute; inset: 0; cursor: pointer; background: #d8d2ec;
+    border-radius: 999px; transition: background .2s; }
+  .switch .knob::before { content: ""; position: absolute; height: 24px; width: 24px;
+    left: 4px; top: 4px; background: white; border-radius: 50%; transition: transform .2s;
+    box-shadow: 0 2px 4px rgba(0,0,0,.25); }
+  .switch input:checked + .knob {
+    background: linear-gradient(160deg, var(--maxwell-purple) 0%, var(--maxwell-purple-2) 100%); }
+  .switch input:checked + .knob::before { transform: translateX(26px); }
+
   /* ---- say something ---- */
   .say-row { display: flex; gap: .6rem; }
   #sayInput {
@@ -222,6 +235,19 @@
   <div class="progress"><span id="progressBar"></span></div>
   <button id="connectBtn" type="button" style="margin-top:.9rem;">Connect Maxwell</button>
   <div id="status">Search for a song to start.</div>
+</section>
+
+<section class="card" id="showtimeCard">
+  <div class="switch-row">
+    <div>
+      <h2 style="margin:0;">Showtime mode</h2>
+      <p class="hint" style="margin:.25rem 0 0;">Auto-play random musical-theater clips as booth filler. Flip off to take over.</p>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="autoToggle">
+      <span class="knob"></span>
+    </label>
+  </div>
 </section>
 
 <section class="card">
