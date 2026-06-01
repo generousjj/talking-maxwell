@@ -27,6 +27,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from urllib.parse import urlparse
+
 import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
@@ -79,6 +81,98 @@ def compose_instructions(base: str, context: Optional[str]) -> str:
 
 STATIC_WEB_SUBDIR = "web"
 
+# ---- Song lip-sync ("jukebox") config (mirrors api/index.py) ----------
+# Spotify is search-only; the secret stays server-side. App tokens use
+# the client-credentials flow and are cached until expiry. Audio is only
+# proxied from known preview CDNs (anti-SSRF + not an open proxy).
+SONG_AUDIO_HOST_SUFFIXES = ("scdn.co", "mzstatic.com", "itunes.apple.com")
+MAX_SONG_AUDIO_BYTES = 12 * 1024 * 1024
+_spotify_token_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
+
+
+def _song_host_allowed(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:  # noqa: BLE001
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return any(
+        host == suffix or host.endswith("." + suffix)
+        for suffix in SONG_AUDIO_HOST_SUFFIXES
+    )
+
+
+async def _spotify_token(client_id: Optional[str], client_secret: Optional[str]) -> Optional[str]:
+    """Cached Spotify app token via client-credentials. Returns None if
+    creds are unset or minting fails."""
+    import base64
+    import time
+
+    now = time.time()
+    cached = _spotify_token_cache.get("value")
+    if cached and float(_spotify_token_cache.get("expires_at", 0)) > now + 5:
+        return cached
+    if not (client_id and client_secret):
+        return None
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    timeout = aiohttp.ClientTimeout(total=12)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                "https://accounts.spotify.com/api/token",
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data="grant_type=client_credentials",
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    log.warning("spotify token failed: %s %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+    except aiohttp.ClientError as exc:
+        log.warning("spotify token transport error: %s", exc)
+        return None
+    token = data.get("access_token")
+    ttl = float(data.get("expires_in", 3600) or 3600)
+    if token:
+        _spotify_token_cache["value"] = token
+        _spotify_token_cache["expires_at"] = now + ttl
+    return token
+
+
+async def _itunes_preview(session: "aiohttp.ClientSession", term: str) -> Optional[str]:
+    """Tokenless iTunes preview fallback for tracks Spotify returns with
+    preview_url: null."""
+    if not term:
+        return None
+    try:
+        async with session.get(
+            "https://itunes.apple.com/search",
+            params={"term": term, "media": "music", "entity": "song", "limit": 1},
+        ) as resp:
+            if resp.status >= 400:
+                return None
+            data = await resp.json(content_type=None)
+    except aiohttp.ClientError:
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+    results = data.get("results") or []
+    if not results:
+        return None
+    return results[0].get("previewUrl")
+
+
+def _spotify_album_art(track: dict) -> Optional[str]:
+    images = ((track.get("album") or {}).get("images")) or []
+    if not images:
+        return None
+    return (images[1] if len(images) >= 2 else images[0]).get("url")
+
 
 def _web_root() -> Path:
     return Path(__file__).resolve().parent.parent / "static" / STATIC_WEB_SUBDIR
@@ -103,6 +197,12 @@ async def handle_admits(request: web.Request) -> web.Response:
     # (the auth middleware already covered that); renders the static
     # asset, which pulls the browser realtime + Web Serial modules.
     return _send_static_file(request, "admits.html")
+
+
+async def handle_sing(request: web.Request) -> web.Response:
+    # Song lip-sync "jukebox" page — the booth's headline experience.
+    # Same session gate as the other pages.
+    return _send_static_file(request, "sing.html")
 
 
 async def handle_health(_request: web.Request) -> web.Response:
@@ -350,6 +450,121 @@ def _require_openai_key(request: web.Request) -> Any:
 
 
 # --------------------------------------------------------------------
+# Song lip-sync ("jukebox") endpoints
+# --------------------------------------------------------------------
+
+async def handle_song_search(request: web.Request) -> web.Response:
+    query = (request.query.get("q") or "").strip()[:120]
+    if not query:
+        return web.json_response({"ok": False, "error": "empty_query"}, status=400)
+    cid = request.app.get("spotify_client_id")
+    csecret = request.app.get("spotify_client_secret")
+    token = await _spotify_token(cid, csecret)
+    if not token:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "spotify_not_configured",
+                "detail": "Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET.",
+            },
+            status=503,
+        )
+    try:
+        n = max(1, min(int(request.query.get("limit") or 8), 12))
+    except ValueError:
+        n = 8
+
+    timeout = aiohttp.ClientTimeout(total=12)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get(
+                "https://api.spotify.com/v1/search",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"q": query, "type": "track", "limit": n},
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    log.warning("spotify search failed: %s %s", resp.status, body[:200])
+                    return web.json_response(
+                        {"ok": False, "error": "spotify_error", "status": resp.status},
+                        status=502,
+                    )
+                data = await resp.json(content_type=None)
+        except aiohttp.ClientError as exc:
+            log.warning("spotify search transport error: %s", exc)
+            return web.json_response(
+                {"ok": False, "error": "spotify_transport"}, status=502
+            )
+
+        items = (data.get("tracks") or {}).get("items") or []
+        tracks = []
+        for it in items:
+            tracks.append(
+                {
+                    "id": it.get("id"),
+                    "title": it.get("name"),
+                    "artist": ", ".join(
+                        a.get("name") for a in (it.get("artists") or []) if a.get("name")
+                    ),
+                    "art": _spotify_album_art(it),
+                    "preview_url": it.get("preview_url"),
+                    "duration_ms": it.get("duration_ms"),
+                }
+            )
+
+        missing = [t for t in tracks if not t.get("preview_url")]
+        if missing:
+            async def _fill(t: dict) -> None:
+                term = f"{t.get('artist') or ''} {t.get('title') or ''}".strip()
+                t["preview_url"] = await _itunes_preview(session, term)
+
+            await asyncio.gather(*[_fill(t) for t in missing], return_exceptions=True)
+
+    playable = [t for t in tracks if t.get("preview_url")]
+    return web.json_response({"ok": True, "tracks": playable})
+
+
+async def handle_song_audio(request: web.Request) -> web.StreamResponse:
+    target = (request.query.get("url") or "").strip()
+    if not target or not _song_host_allowed(target):
+        return web.json_response({"ok": False, "error": "bad_url"}, status=400)
+
+    timeout = aiohttp.ClientTimeout(total=20)
+    session = aiohttp.ClientSession(timeout=timeout)
+    try:
+        upstream = await session.get(target, allow_redirects=True)
+    except aiohttp.ClientError as exc:
+        log.warning("song audio transport error: %s", exc)
+        await session.close()
+        return web.json_response({"ok": False, "error": "audio_transport"}, status=502)
+    if upstream.status >= 400:
+        upstream.release()
+        await session.close()
+        return web.json_response(
+            {"ok": False, "error": "audio_error", "status": upstream.status}, status=502
+        )
+
+    media_type = upstream.headers.get("Content-Type", "audio/mpeg")
+    resp = web.StreamResponse(
+        status=200,
+        headers={"Content-Type": media_type, "Cache-Control": "no-store"},
+    )
+    await resp.prepare(request)
+    sent = 0
+    try:
+        async for chunk in upstream.content.iter_chunked(65536):
+            sent += len(chunk)
+            if sent > MAX_SONG_AUDIO_BYTES:
+                break
+            await resp.write(chunk)
+    finally:
+        upstream.release()
+        await session.close()
+    await resp.write_eof()
+    return resp
+
+
+# --------------------------------------------------------------------
 # App factory
 # --------------------------------------------------------------------
 
@@ -359,6 +574,8 @@ def build_app(
     openai_api_key: Optional[str],
     realtime_voice: str = DEFAULT_REALTIME_VOICE,
     realtime_model: str = DEFAULT_REALTIME_MODEL,
+    spotify_client_id: Optional[str] = None,
+    spotify_client_secret: Optional[str] = None,
 ) -> web.Application:
     app = web.Application(middlewares=[auth_middleware])
     app["auth_config"] = auth_config
@@ -366,11 +583,14 @@ def build_app(
     app["openai_api_key"] = openai_api_key
     app["realtime_voice"] = realtime_voice
     app["realtime_model"] = realtime_model
+    app["spotify_client_id"] = spotify_client_id
+    app["spotify_client_secret"] = spotify_client_secret
 
     app.router.add_get("/healthz", handle_health)
     app.router.add_get("/login", handle_login_page)
     app.router.add_get("/", handle_index)
     app.router.add_get("/admits", handle_admits)
+    app.router.add_get("/sing", handle_sing)
 
     app.router.add_post("/api/auth/login", handle_login)
     app.router.add_post("/api/auth/logout", handle_logout)
@@ -378,6 +598,8 @@ def build_app(
 
     app.router.add_post("/api/web/realtime/session", handle_realtime_session)
     app.router.add_post("/api/web/typed", handle_typed_turn)
+    app.router.add_get("/api/web/song/search", handle_song_search)
+    app.router.add_get("/api/web/song/audio", handle_song_audio)
 
     # Expose a tiny config endpoint so the browser knows what the
     # server-configured defaults are (without baking them into HTML).
@@ -459,12 +681,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     openai_api_key = os.environ.get("OPENAI_API_KEY") or None
     if not openai_api_key:
         log.warning("OPENAI_API_KEY is not set; OpenAI endpoints will return 503.")
+    spotify_client_id = os.environ.get("SPOTIFY_CLIENT_ID") or None
+    spotify_client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET") or None
+    if not (spotify_client_id and spotify_client_secret):
+        log.info("SPOTIFY_CLIENT_ID/SECRET not set; song search will return 503.")
 
     app = build_app(
         auth_config=auth_config,
         openai_api_key=openai_api_key,
         realtime_voice=args.realtime_voice,
         realtime_model=args.realtime_model,
+        spotify_client_id=spotify_client_id,
+        spotify_client_secret=spotify_client_secret,
     )
 
     async def _run() -> None:

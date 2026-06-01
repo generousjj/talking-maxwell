@@ -303,6 +303,172 @@ def test_motion_config_gated_by_auth(client):
     assert resp.status_code == 401
 
 
+SPOTIFY_ID = "spotify-client-id"
+SPOTIFY_SECRET = "spotify-client-secret-NEVER-LEAK"
+
+
+class _FakeSongResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+def test_song_search_requires_auth(client):
+    c, _ = client
+    resp = c.get("/api/web/song/search?q=test")
+    assert resp.status_code == 401
+
+
+def test_song_search_503_without_credentials(client):
+    c, mod = client
+    mod._reset_for_tests(spotify_id="", spotify_secret="")
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    resp = c.get("/api/web/song/search?q=test")
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "spotify_not_configured"
+
+
+def test_song_search_spotify_with_itunes_fallback(client, monkeypatch):
+    c, mod = client
+    mod._reset_for_tests(spotify_id=SPOTIFY_ID, spotify_secret=SPOTIFY_SECRET)
+    calls = {"itunes": 0}
+
+    class FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def aclose(self):
+            return None
+
+        async def post(self, url, *, headers=None, content=None, **kw):
+            # Spotify app-token mint (client-credentials).
+            assert "accounts.spotify.com" in url
+            return _FakeSongResponse(200, {"access_token": "app-token", "expires_in": 3600})
+
+        async def get(self, url, *, headers=None, params=None, **kw):
+            if "api.spotify.com" in url:
+                return _FakeSongResponse(
+                    200,
+                    {
+                        "tracks": {
+                            "items": [
+                                {
+                                    "id": "1",
+                                    "name": "Has Preview",
+                                    "artists": [{"name": "Artist A"}],
+                                    "album": {"images": [{"url": "big"}, {"url": "mid"}]},
+                                    "preview_url": "https://p.scdn.co/mp3/abc",
+                                    "duration_ms": 30000,
+                                },
+                                {
+                                    "id": "2",
+                                    "name": "No Preview",
+                                    "artists": [{"name": "Artist B"}],
+                                    "album": {"images": [{"url": "big2"}]},
+                                    "preview_url": None,
+                                    "duration_ms": 30000,
+                                },
+                            ]
+                        }
+                    },
+                )
+            if "itunes.apple.com" in url:
+                calls["itunes"] += 1
+                return _FakeSongResponse(
+                    200,
+                    {"results": [{"previewUrl": "https://audio-ssl.itunes.apple.com/x.m4a"}]},
+                )
+            return _FakeSongResponse(404, {})
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", FakeAsyncClient)
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    resp = c.get("/api/web/song/search?q=hello")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    tracks = body["tracks"]
+    assert len(tracks) == 2
+    # iTunes fallback resolved a preview for the track Spotify left null.
+    assert calls["itunes"] == 1
+    by_title = {t["title"]: t for t in tracks}
+    assert by_title["Has Preview"]["preview_url"] == "https://p.scdn.co/mp3/abc"
+    assert by_title["No Preview"]["preview_url"].startswith(
+        "https://audio-ssl.itunes.apple.com"
+    )
+    # Mid-size album art is preferred over the largest image.
+    assert by_title["Has Preview"]["art"] == "mid"
+    # The Spotify secret must never reach the browser.
+    assert SPOTIFY_SECRET not in json.dumps(body)
+
+
+def test_song_audio_rejects_disallowed_hosts(client):
+    c, _ = client
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    bad = c.get("/api/web/song/audio?url=https://evil.example.com/x.mp3")
+    assert bad.status_code == 400
+    assert bad.json()["error"] == "bad_url"
+    # Non-HTTPS is rejected even for an allowed host.
+    insecure = c.get("/api/web/song/audio?url=http://p.scdn.co/x.mp3")
+    assert insecure.status_code == 400
+
+
+def test_song_audio_streams_allowed_host(client, monkeypatch):
+    c, mod = client
+
+    class FakeUpstream:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = {"content-type": "audio/mpeg"}
+
+        async def aiter_bytes(self, n=65536):
+            for chunk in (b"ID3", b"audio-bytes"):
+                yield chunk
+
+        async def aclose(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def build_request(self, method, url):
+            return (method, url)
+
+        async def send(self, request, stream=False):
+            return FakeUpstream()
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", FakeAsyncClient)
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    resp = c.get("/api/web/song/audio?url=https://p.scdn.co/mp3/abc")
+    assert resp.status_code == 200
+    assert resp.content == b"ID3audio-bytes"
+    assert resp.headers["content-type"].startswith("audio/mpeg")
+
+
+def test_sing_page_requires_auth_and_renders(client):
+    c, _ = client
+    resp = c.get("/sing", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/login"
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    page = c.get("/sing")
+    assert page.status_code == 200
+    assert "/static/web/js/sing.js" in page.text
+
+
 def test_api_requirements_are_minimal():
     root = Path(__file__).resolve().parent.parent
     raw = (root / "api" / "requirements.txt").read_text().lower()

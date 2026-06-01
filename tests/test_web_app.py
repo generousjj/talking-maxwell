@@ -238,15 +238,234 @@ async def test_realtime_session_returns_503_when_key_missing():
         await close()
 
 
+SPOTIFY_ID = "spotify-client-id"
+SPOTIFY_SECRET = "spotify-client-secret-NEVER-LEAK"
+
+
+def _build_song_client_factory(spotify_id, spotify_secret):
+    async def factory():
+        app = web_app.build_app(
+            auth_config=_auth_config(),
+            openai_api_key=RAW_API_KEY,
+            spotify_client_id=spotify_id,
+            spotify_client_secret=spotify_secret,
+        )
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        return client, client.close
+    return factory
+
+
+class _FakeReqCtx:
+    """Mimics aiohttp's request context manager, which is both awaitable
+    (``await session.get(...)``) and an async context manager
+    (``async with session.get(...) as resp``)."""
+
+    def __init__(self, resp):
+        self._resp = resp
+
+    def __await__(self):
+        async def _coro():
+            return self._resp
+        return _coro().__await__()
+
+    async def __aenter__(self):
+        return self._resp
+
+    async def __aexit__(self, *a):
+        return None
+
+
+class _FakeContent:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def iter_chunked(self, n):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeResp:
+    def __init__(self, status, payload=None, *, chunks=None, headers=None):
+        self.status = status
+        self._payload = payload
+        self._chunks = chunks or []
+        self.headers = headers or {}
+
+    async def json(self, content_type=None):
+        return self._payload
+
+    async def text(self):
+        return json.dumps(self._payload)
+
+    def release(self):
+        return None
+
+    @property
+    def content(self):
+        return _FakeContent(self._chunks)
+
+
+def _reset_song_cache():
+    web_app._spotify_token_cache["value"] = None
+    web_app._spotify_token_cache["expires_at"] = 0.0
+
+
+@_async
+async def test_song_search_503_without_credentials():
+    _reset_song_cache()
+    client, close = await _build_song_client_factory("", "")()
+    try:
+        await client.post("/api/auth/login", json={"password": PASSWORD})
+        resp = await client.get("/api/web/song/search?q=test")
+        assert resp.status == 503
+        assert (await resp.json())["error"] == "spotify_not_configured"
+    finally:
+        await close()
+
+
+@_async
+async def test_song_search_spotify_with_itunes_fallback():
+    _reset_song_cache()
+    calls = {"itunes": 0}
+
+    class FakeSession:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def close(self):
+            return None
+
+        def post(self, url, *, headers=None, data=None, **kw):
+            assert "accounts.spotify.com" in url
+            return _FakeReqCtx(_FakeResp(200, {"access_token": "app-token", "expires_in": 3600}))
+
+        def get(self, url, *, headers=None, params=None, allow_redirects=None, **kw):
+            if "api.spotify.com" in url:
+                return _FakeReqCtx(_FakeResp(200, {
+                    "tracks": {"items": [
+                        {
+                            "id": "1", "name": "Has Preview",
+                            "artists": [{"name": "Artist A"}],
+                            "album": {"images": [{"url": "big"}, {"url": "mid"}]},
+                            "preview_url": "https://p.scdn.co/mp3/abc",
+                            "duration_ms": 30000,
+                        },
+                        {
+                            "id": "2", "name": "No Preview",
+                            "artists": [{"name": "Artist B"}],
+                            "album": {"images": [{"url": "big2"}]},
+                            "preview_url": None, "duration_ms": 30000,
+                        },
+                    ]}
+                }))
+            if "itunes.apple.com" in url:
+                calls["itunes"] += 1
+                return _FakeReqCtx(_FakeResp(200, {
+                    "results": [{"previewUrl": "https://audio-ssl.itunes.apple.com/x.m4a"}]
+                }))
+            return _FakeReqCtx(_FakeResp(404, {}))
+
+    real = web_app.aiohttp.ClientSession
+    web_app.aiohttp.ClientSession = FakeSession
+    client, close = await _build_song_client_factory(SPOTIFY_ID, SPOTIFY_SECRET)()
+    try:
+        await client.post("/api/auth/login", json={"password": PASSWORD})
+        resp = await client.get("/api/web/song/search?q=hello")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+        tracks = body["tracks"]
+        assert len(tracks) == 2
+        assert calls["itunes"] == 1
+        by_title = {t["title"]: t for t in tracks}
+        assert by_title["Has Preview"]["preview_url"] == "https://p.scdn.co/mp3/abc"
+        assert by_title["No Preview"]["preview_url"].startswith(
+            "https://audio-ssl.itunes.apple.com"
+        )
+        assert by_title["Has Preview"]["art"] == "mid"
+        assert SPOTIFY_SECRET not in json.dumps(body)
+    finally:
+        await close()
+        web_app.aiohttp.ClientSession = real
+
+
+@_async
+async def test_song_audio_rejects_disallowed_hosts():
+    client, close = await _build_song_client_factory(SPOTIFY_ID, SPOTIFY_SECRET)()
+    try:
+        await client.post("/api/auth/login", json={"password": PASSWORD})
+        bad = await client.get("/api/web/song/audio?url=https://evil.example.com/x.mp3")
+        assert bad.status == 400
+        assert (await bad.json())["error"] == "bad_url"
+        insecure = await client.get("/api/web/song/audio?url=http://p.scdn.co/x.mp3")
+        assert insecure.status == 400
+    finally:
+        await close()
+
+
+@_async
+async def test_song_audio_streams_allowed_host():
+    class FakeSession:
+        def __init__(self, *a, **kw):
+            pass
+
+        def get(self, url, *, allow_redirects=None, **kw):
+            return _FakeReqCtx(
+                _FakeResp(200, chunks=[b"ID3", b"audio-bytes"], headers={"Content-Type": "audio/mpeg"})
+            )
+
+        async def close(self):
+            return None
+
+    real = web_app.aiohttp.ClientSession
+    web_app.aiohttp.ClientSession = FakeSession
+    client, close = await _build_song_client_factory(SPOTIFY_ID, SPOTIFY_SECRET)()
+    try:
+        await client.post("/api/auth/login", json={"password": PASSWORD})
+        resp = await client.get("/api/web/song/audio?url=https://p.scdn.co/mp3/abc")
+        assert resp.status == 200
+        body = await resp.read()
+        assert body == b"ID3audio-bytes"
+        assert resp.headers["Content-Type"].startswith("audio/mpeg")
+    finally:
+        await close()
+        web_app.aiohttp.ClientSession = real
+
+
+@_async
+async def test_sing_page_requires_auth_and_renders():
+    client, close = await _build_song_client_factory(SPOTIFY_ID, SPOTIFY_SECRET)()
+    try:
+        resp = await client.get("/sing", allow_redirects=False)
+        assert resp.status == 302
+        assert resp.headers["Location"] == "/login"
+        await client.post("/api/auth/login", json={"password": PASSWORD})
+        page = await client.get("/sing")
+        assert page.status == 200
+        assert "/static/web/js/sing.js" in await page.text()
+    finally:
+        await close()
+
+
 def test_frontend_assets_present():
     root = Path(__file__).resolve().parent.parent / "static" / "web"
     for name in (
         "login.html",
         "index.html",
         "admits.html",
+        "sing.html",
         "css/app.css",
         "js/app.js",
         "js/admits.js",
+        "js/sing.js",
         "js/auth.js",
         "js/serial.js",
         "js/bottango.js",

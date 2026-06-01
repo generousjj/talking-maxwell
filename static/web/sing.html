@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Maxwell Sings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --maxwell-blue:   #3b8edb;
+    --maxwell-blue-2: #2b6fb8;
+    --maxwell-purple: #8b5cf6;
+    --maxwell-purple-2: #6d3fd6;
+    --maxwell-brown:  #8b5e34;
+    --maxwell-brown-2: #5f3f1f;
+    --cream:          #fff8ef;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100vh;
+    font-family: 'Baloo 2', 'Fredoka', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(160deg, #f0f4ff 0%, #fef3ec 100%);
+    color: var(--maxwell-brown-2);
+  }
+  .frame { max-width: 720px; margin: 1.5rem auto 3rem; padding: 0 1rem; }
+  header {
+    display: flex; align-items: center; gap: 1rem;
+    padding: 1rem 1.25rem;
+    background: white;
+    border-radius: 28px;
+    box-shadow: 0 8px 24px rgba(59,142,219,.18);
+    border: 3px solid var(--maxwell-purple);
+  }
+  .mascot { width: 72px; height: 72px; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center; }
+  .mascot img { max-width: 100%; max-height: 100%; width: auto; height: auto;
+    object-fit: contain; display: block; }
+  header h1 {
+    font-family: 'Baloo 2', sans-serif;
+    font-weight: 800; font-size: 1.8rem; margin: 0;
+    color: var(--maxwell-purple-2); letter-spacing: -.5px;
+  }
+  header .tag { font-size: .95rem; color: var(--maxwell-brown); font-weight: 500; margin-top: 2px; }
+
+  .card {
+    background: white; border-radius: 28px;
+    padding: 1.25rem 1.5rem; margin-top: 1rem;
+    box-shadow: 0 6px 18px rgba(139,94,246,.10);
+    border: 2px solid #ede9fe;
+  }
+  .card h2 { font-weight: 700; font-size: 1.1rem; margin: 0 0 .75rem;
+    color: var(--maxwell-purple-2); }
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; }
+
+  /* ---- search ---- */
+  .search-row { display: flex; gap: .6rem; }
+  #searchInput {
+    flex: 1; font-family: inherit; font-size: 1.05rem; font-weight: 500;
+    padding: .7rem 1rem; border-radius: 16px;
+    border: 2px solid #ede9fe; background: #faf9ff;
+    color: var(--maxwell-brown-2);
+  }
+  #searchBtn {
+    font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 1.05rem;
+    padding: .7rem 1.5rem; border-radius: 16px; cursor: pointer;
+    border: none; color: white;
+    background: linear-gradient(160deg, var(--maxwell-purple) 0%, var(--maxwell-purple-2) 100%);
+    box-shadow: 0 4px 12px rgba(139,94,246,.35);
+    transition: transform .08s;
+  }
+  #searchBtn:active { transform: translateY(2px); }
+  #searchBtn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .results {
+    display: flex; flex-direction: column; gap: .5rem;
+    margin-top: 1rem; max-height: 46vh; overflow-y: auto;
+  }
+  .track {
+    display: flex; align-items: center; gap: .8rem;
+    padding: .55rem .65rem; border-radius: 18px;
+    border: 2px solid #f1edff; background: #fbfaff;
+    cursor: pointer; transition: background .12s, border-color .12s, transform .08s;
+    text-align: left;
+  }
+  .track:hover { background: #f3f0ff; border-color: var(--maxwell-purple); }
+  .track:active { transform: translateY(1px); }
+  .track img {
+    width: 52px; height: 52px; border-radius: 12px; flex: 0 0 auto;
+    object-fit: cover; background: #ede9fe;
+  }
+  .track .meta { min-width: 0; }
+  .track .t-title {
+    font-weight: 700; font-size: 1rem; color: var(--maxwell-brown-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .track .t-artist {
+    font-size: .85rem; color: var(--maxwell-brown); font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* ---- now playing ---- */
+  .now {
+    display: flex; align-items: center; gap: 1rem;
+  }
+  .now img {
+    width: 84px; height: 84px; border-radius: 18px; flex: 0 0 auto;
+    object-fit: cover; background: #ede9fe;
+  }
+  .now .meta { flex: 1; min-width: 0; }
+  .now .n-title { font-weight: 800; font-size: 1.2rem; color: var(--maxwell-purple-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .now .n-artist { font-size: .95rem; color: var(--maxwell-brown); font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #playBtn {
+    flex: 0 0 auto;
+    width: 92px; height: 92px; border-radius: 50%;
+    border: 5px solid var(--maxwell-purple-2);
+    background: radial-gradient(circle at 30% 30%,
+      var(--maxwell-purple) 0%, var(--maxwell-purple-2) 70%, var(--maxwell-blue-2) 100%);
+    color: white; font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 1.1rem;
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+    box-shadow: 0 10px 24px rgba(109,63,214,.4), inset 0 -6px 0 rgba(0,0,0,.15);
+    transition: transform .1s, box-shadow .1s;
+  }
+  #playBtn:active { transform: translateY(3px); box-shadow: 0 4px 12px rgba(109,63,214,.4), inset 0 -2px 0 rgba(0,0,0,.15); }
+  #playBtn:disabled { opacity: .5; cursor: not-allowed; background: #cbd5e1; border-color: #94a3b8; }
+  .progress {
+    margin-top: .9rem; height: 8px; border-radius: 999px; background: #ede9fe; overflow: hidden;
+  }
+  .progress > span { display: block; height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--maxwell-blue), var(--maxwell-purple)); }
+
+  #status {
+    text-align: center; font-weight: 600; font-size: 1rem;
+    margin-top: .75rem; color: var(--maxwell-purple-2); min-height: 1.4em;
+  }
+  #status.live  { color: var(--maxwell-blue-2); }
+  #status.busy  { color: #c2410c; }
+  #status.error { color: #b91c1c; }
+
+  #connectBtn {
+    display: none;
+    background: white; color: var(--maxwell-purple-2);
+    border: 2px solid var(--maxwell-purple); border-radius: 999px;
+    padding: .55rem 1.4rem; font-family: 'Baloo 2', sans-serif;
+    font-weight: 700; font-size: 1rem; cursor: pointer;
+    box-shadow: 0 4px 10px rgba(94,66,153,.18);
+    transition: transform .08s, background .15s, color .15s;
+  }
+  #connectBtn:hover { background: var(--maxwell-purple); color: white; }
+  #connectBtn:active { transform: translateY(2px); }
+  #connectBtn.visible { display: inline-block; }
+
+  .device-row { display: flex; flex-direction: column; gap: .5rem; margin-top: .25rem; }
+  .device-row label { display: flex; flex-direction: column; gap: .25rem;
+    font-size: .85rem; font-weight: 600; color: var(--maxwell-brown); }
+  .device-row select {
+    font-family: inherit; font-size: .95rem; padding: .5rem .75rem;
+    border-radius: 14px; border: 2px solid #ede9fe; background: #faf9ff;
+    color: var(--maxwell-brown-2); font-weight: 500; max-width: 100%;
+  }
+  .device-row select:disabled { opacity: .5; }
+
+  .sliders { display: flex; flex-direction: column; gap: .9rem; margin-top: .5rem; }
+  .sliders label { display: flex; flex-direction: column; gap: .3rem;
+    font-size: .9rem; font-weight: 600; color: var(--maxwell-brown); }
+  .sliders .slider-row { display: flex; align-items: center; gap: .75rem; }
+  .sliders input[type="range"] { flex: 1; accent-color: var(--maxwell-purple); }
+  .sliders .value { font-variant-numeric: tabular-nums; font-weight: 700; font-size: .9rem;
+    color: var(--maxwell-purple-2); min-width: 3.2rem; text-align: right; }
+  .hint { font-size: .8rem; font-weight: 500; color: var(--maxwell-brown); opacity: .75; }
+
+  footer { text-align: center; margin-top: 1.25rem; font-size: .85rem;
+    color: var(--maxwell-brown); opacity: .8; }
+  footer a { color: var(--maxwell-purple-2); text-decoration: none; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="frame">
+
+<header>
+  <div class="mascot"><img src="/static/maxwell.png" alt="Maxwell the parrot"></div>
+  <div>
+    <h1>Maxwell Sings!</h1>
+    <div class="tag">Search a song and watch Maxwell lip-sync along</div>
+  </div>
+</header>
+
+<section class="card">
+  <h2>Pick a song</h2>
+  <div class="search-row">
+    <input id="searchInput" type="text" placeholder="Search any song or artist…" autocomplete="off">
+    <button id="searchBtn" type="button">Search</button>
+  </div>
+  <div id="results" class="results"></div>
+</section>
+
+<section class="card" id="nowCard" style="display:none;">
+  <h2>Now playing</h2>
+  <div class="now">
+    <img id="nowArt" src="" alt="">
+    <div class="meta">
+      <div class="n-title" id="nowTitle">—</div>
+      <div class="n-artist" id="nowArtist"></div>
+    </div>
+    <button id="playBtn" type="button" disabled>Play</button>
+  </div>
+  <div class="progress"><span id="progressBar"></span></div>
+  <button id="connectBtn" type="button" style="margin-top:.9rem;">Connect Maxwell</button>
+  <div id="status">Search for a song to start.</div>
+</section>
+
+<section class="card">
+  <h2>Speaker</h2>
+  <div class="device-row">
+    <label>Output device
+      <select id="outputDeviceSelect"></select>
+    </label>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Motion tuning</h2>
+  <p class="hint" style="margin:0 0 .75rem;">Live tweaks to Maxwell's movement. Saved in this browser.</p>
+  <div class="sliders">
+    <label>Jaw gain
+      <div class="slider-row">
+        <input type="range" id="jawGain" min="0.5" max="6.0" step="0.1" value="6.0">
+        <span class="value" id="jawGainVal">6.0</span>
+      </div>
+    </label>
+    <label>Wing strength
+      <div class="slider-row">
+        <input type="range" id="wingStrength" min="0" max="1.0" step="0.05" value="1.00">
+        <span class="value" id="wingStrengthVal">1.00</span>
+      </div>
+    </label>
+    <label>Head drift
+      <div class="slider-row">
+        <input type="range" id="headDrift" min="0" max="0.4" step="0.01" value="0.40">
+        <span class="value" id="headDriftVal">0.40</span>
+      </div>
+    </label>
+  </div>
+</section>
+
+<footer>
+  Built for Stanford TEA. <a href="/admits">Chat with Maxwell</a> · <a href="/">Operator view</a>
+</footer>
+
+</div>
+
+<script type="module" src="/static/web/js/sing.js"></script>
+</body>
+</html>
