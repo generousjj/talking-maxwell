@@ -85,6 +85,25 @@ export class RealtimeSession {
     const token = sess.client_secret;
     const model = sess.model;
 
+    // Pre-create the AudioContext now, while we're still inside the
+    // click's user-gesture window. If we wait until the remote track
+    // arrives (a few hundred ms later), Chrome's autoplay policy
+    // forces the new context into "suspended" state and the analyser
+    // reads silence for the first ~200 ms of Maxwell's reply —
+    // exactly the "he just breathes at first" symptom.
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC && !this.audioCtx) {
+        this.audioCtx = new AC();
+        if (this.audioCtx.state === "suspended") {
+          // Still inside the gesture, so this resolves immediately.
+          await this.audioCtx.resume().catch(() => {});
+        }
+      }
+    } catch (e) {
+      this.log(`audio ctx setup: ${e.message || e}`);
+    }
+
     const audioConstraints = {
       channelCount: 1,
       sampleRate: 24000,
@@ -375,23 +394,18 @@ export class RealtimeSession {
       });
     }
 
-    // Tap the same stream for envelope analysis (jaw motion).
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    this.audioCtx = ctx;
-    const src = ctx.createMediaStreamSource(stream);
-    const an = ctx.createAnalyser();
-    an.fftSize = 1024;
-    src.connect(an);
-    this.analyser = an;
-    this._analysisBuf = new Float32Array(an.fftSize);
-    // Critical: the `track` event fires *after* the click's user-
-    // gesture window has expired, so this AudioContext starts in
-    // the "suspended" state under Chrome's autoplay policy. The
-    // <audio> element still plays audio (its own pipeline), but
-    // the AnalyserNode reads silence — that's why the envelope/jaw
-    // stayed at 0 even while Maxwell was clearly talking. We resume
-    // explicitly and re-resume on suspension (e.g. user briefly
-    // backgrounds the tab and comes back).
+    // Reuse the AudioContext we created during start() so we're
+    // never tapping a suspended context here. If start() didn't get
+    // to create one (very old browser, etc.), fall back to a fresh
+    // one and try to resume — but at that point the gesture window
+    // is gone and the first reply will likely come in muted to the
+    // analyser. That's acceptable degraded behavior.
+    let ctx = this.audioCtx;
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      ctx = new AC();
+      this.audioCtx = ctx;
+    }
     const tryResume = () => {
       if (ctx.state === "suspended") {
         ctx.resume().catch((e) => this.log(`audio ctx resume: ${e.message || e}`));
@@ -401,6 +415,12 @@ export class RealtimeSession {
     if (ctx.addEventListener) {
       ctx.addEventListener("statechange", tryResume);
     }
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser();
+    an.fftSize = 1024;
+    src.connect(an);
+    this.analyser = an;
+    this._analysisBuf = new Float32Array(an.fftSize);
     // 50 Hz envelope updates is plenty for a servo; the behavior tick
     // runs at 30 Hz and picks up whatever the follower has smoothed.
     this._analysisTimer = setInterval(() => this._pumpEnvelope(), 20);
