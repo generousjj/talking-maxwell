@@ -67,18 +67,11 @@ export class RealtimeSession {
     //   conversation_already_has_active_response
     this._pttDownAt = 0;
     this._responseActive = false;
-    // True only while THIS realtime session is actually emitting
-    // output audio. The jaw envelope must be driven by whichever
-    // session is currently producing audio; realtime and typed share
-    // the same envelope + behavior objects, so realtime must not write
-    // its (silent, remote-stream) RMS into the envelope while it's
-    // merely listening — that would trample TypedSession's samples.
-    this._audioActive = false;
   }
 
   isRunning() { return this._running; }
 
-  async start({ voice = "ballad", pttMode = false, micDeviceId = "", outputDeviceId = "" } = {}) {
+  async start({ voice = "ballad", pttMode = false, micDeviceId = "", outputDeviceId = "", context = "" } = {}) {
     if (this._running) return;
     this._running = true;
     this._pttMode = pttMode;
@@ -87,7 +80,7 @@ export class RealtimeSession {
 
     const sess = await apiJson("/api/web/realtime/session", {
       method: "POST",
-      body: { voice },
+      body: { voice, context: context || undefined },
     });
     const token = sess.client_secret;
     const model = sess.model;
@@ -183,7 +176,6 @@ export class RealtimeSession {
   async stop() {
     this._running = false;
     this._responseActive = false;
-    this._audioActive = false;
     this._pttDownAt = 0;
     this._pendingAssistant = "";
     this._pendingUser = "";
@@ -355,11 +347,9 @@ export class RealtimeSession {
       this.onState("thinking");
     } else if (t === "response.done" || t === "response.cancelled" || t === "response.failed") {
       this._responseActive = false;
-      this._audioActive = false;
     } else if (t === "response.audio.delta"
             || t === "response.output_audio.delta"
             || t === "output_audio_buffer.started") {
-      this._audioActive = true;
       // Enter SPEAKING as soon as audio starts flowing. We stay here
       // until either the WebRTC output buffer actually drains OR the
       // envelope-silence watchdog catches sustained silence — NOT
@@ -383,7 +373,6 @@ export class RealtimeSession {
         try { this.audioEl.muted = false; } catch (_) {}
       }
     } else if (t === "output_audio_buffer.stopped" || t === "output_audio_buffer.cleared") {
-      this._audioActive = false;
       this.behavior && this.behavior.setState("listening");
       this.onState("listening");
     } else if (t === "error") {
@@ -483,18 +472,16 @@ export class RealtimeSession {
       this._envFirstSeenLogged = true;
       this.log(`first audio detected by analyser (rms=${rms.toFixed(4)})`);
     }
-    // Only own the envelope follower while THIS session is actually
-    // emitting audio (tracked locally via _audioActive, set on
-    // output-audio events). The shared behavior.state can read
-    // "speaking" because TypedSession set it — so we must NOT key off
-    // that, or realtime's silent remote-stream RMS would trample
-    // typed's real samples 50x/sec and the jaw would never move.
-    // When realtime isn't the active audio source, stay completely
-    // hands-off: don't touch the shared envelope, behavior envelope,
-    // or run the silence watchdog. Otherwise we fight TypedSession.
-    if (!this._audioActive) return;
-
-    this.envelope.processRms(rms);
+    // Only own the envelope follower when we're actually the source
+    // of audio. If we're listening/thinking (no audio out from this
+    // session) and the user is exercising the typed pipeline in the
+    // same page, blindly writing 0 here would trample TypedSession's
+    // valid RMS samples 50 times a second and the jaw would never
+    // move while Maxwell talks via typed mode.
+    const isSpeaking = this.behavior && this.behavior.state === "speaking";
+    if (isSpeaking || rms > 0.005) {
+      this.envelope.processRms(rms);
+    }
     // Same RMS feeds the separate (higher-gain) behavior envelope.
     if (this.speakingContext) this.speakingContext.updateFromRms(rms);
 
@@ -515,7 +502,6 @@ export class RealtimeSession {
       const quietMs = now - this._lastLoudAt;
       const speakingMs = now - this._speakingSince;
       if (quietMs > 1100 && speakingMs > 1500) {
-        this._audioActive = false;
         this.behavior.setState("listening");
         this.onState("listening");
       }

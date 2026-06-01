@@ -216,6 +216,24 @@ def test_realtime_session_returns_503_when_key_missing(client):
     assert resp.json()["error"] == "openai_key_missing"
 
 
+def test_compose_instructions_appends_context(client):
+    c, mod = client
+    base = "BASE PERSONALITY"
+    # No context -> unchanged base.
+    assert mod.compose_instructions(base, None) == base
+    assert mod.compose_instructions(base, "   ") == base
+    # With context -> base preserved AND context present.
+    out = mod.compose_instructions(base, "You are at NSO today.")
+    assert base in out
+    assert "You are at NSO today." in out
+    # Context is length-capped so a client can't blow up instructions.
+    # (Use a char that doesn't appear in the base/framing text — "z" —
+    # so the count reflects only the injected context.)
+    huge = "z" * 5000
+    capped = mod.compose_instructions(base, huge)
+    assert capped.count("z") == mod.MAX_CONTEXT_CHARS
+
+
 def test_vercel_config_present():
     root = Path(__file__).resolve().parent.parent
     vjson = root / "vercel.json"

@@ -82,6 +82,29 @@ log.info(
     "config.yaml" if (ROOT / "config.yaml").is_file() else "fallback",
 )
 
+# Per-session extra context (the event Maxwell is at, or an operator's
+# custom prompt). Appended to the base personality so the club/TEA
+# personality is always preserved. Capped so a malicious client can't
+# blow up the instruction size or smuggle in a giant prompt.
+MAX_CONTEXT_CHARS = 2000
+
+
+def compose_instructions(base: str, context: str | None) -> str:
+    """Return the base personality with an optional event/custom
+    context appended. Keeps the personality intact (we append rather
+    than replace) and bounds the context length."""
+    ctx = (context or "").strip()
+    if not ctx:
+        return base
+    ctx = ctx[:MAX_CONTEXT_CHARS]
+    return (
+        f"{base}\n\n"
+        "## Right now\n"
+        f"{ctx}\n"
+        "Weave this into how you greet and talk with people when relevant, "
+        "but stay in character as Maxwell."
+    )
+
 STATIC_WEB_ROOT = ROOT / "static" / "web"
 STATIC_DIR = ROOT / "static"
 
@@ -355,6 +378,7 @@ async def realtime_session(request: Request):
         body = {}
     voice = (body.get("voice") or DEFAULT_REALTIME_VOICE).strip()
     model = (body.get("model") or DEFAULT_REALTIME_MODEL).strip()
+    instructions = compose_instructions(SYSTEM_PROMPT, body.get("context"))
 
     # OpenAI deprecated /v1/realtime/sessions in May 2026. The GA flow
     # is now POST /v1/realtime/client_secrets with the session config
@@ -365,7 +389,7 @@ async def realtime_session(request: Request):
         "session": {
             "type": "realtime",
             "model": model,
-            "instructions": SYSTEM_PROMPT,
+            "instructions": instructions,
             "audio": {
                 "input": {
                     "transcription": {"model": "whisper-1"},
@@ -466,8 +490,9 @@ async def typed_turn(request: Request):
     voice = (body.get("voice") or DEFAULT_TTS_VOICE).strip()
     llm_model = os.environ.get("OPENAI_LLM_MODEL", DEFAULT_LLM_MODEL)
     tts_model = os.environ.get("OPENAI_TTS_MODEL", DEFAULT_TTS_MODEL)
+    instructions = compose_instructions(SYSTEM_PROMPT, body.get("context"))
 
-    reply_text = await _chat_completion(llm_model, user_text)
+    reply_text = await _chat_completion(llm_model, user_text, instructions)
     if isinstance(reply_text, JSONResponse):
         return reply_text
     audio_b64_mime = await _tts_speak(tts_model, voice, reply_text)
@@ -479,11 +504,11 @@ async def typed_turn(request: Request):
     )
 
 
-async def _chat_completion(model: str, user_text: str):
+async def _chat_completion(model: str, user_text: str, instructions: str | None = None):
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": instructions or SYSTEM_PROMPT},
             {"role": "user", "content": user_text},
         ],
         "temperature": 0.8,

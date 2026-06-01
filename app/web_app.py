@@ -58,6 +58,25 @@ DEFAULT_LLM_MODEL = "gpt-4o-mini"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 SYSTEM_PROMPT = load_personality(_REPO_ROOT)
 
+# Per-session extra context (event Maxwell is at / custom prompt),
+# appended to the base personality. Bounded so a client can't blow
+# up the instruction size. Mirrors api/index.py.
+MAX_CONTEXT_CHARS = 2000
+
+
+def compose_instructions(base: str, context: Optional[str]) -> str:
+    ctx = (context or "").strip()
+    if not ctx:
+        return base
+    ctx = ctx[:MAX_CONTEXT_CHARS]
+    return (
+        f"{base}\n\n"
+        "## Right now\n"
+        f"{ctx}\n"
+        "Weave this into how you greet and talk with people when relevant, "
+        "but stay in character as Maxwell."
+    )
+
 STATIC_WEB_SUBDIR = "web"
 
 
@@ -130,6 +149,7 @@ async def handle_realtime_session(request: web.Request) -> web.Response:
 
     voice = (body.get("voice") or DEFAULT_REALTIME_VOICE).strip()
     model = (body.get("model") or DEFAULT_REALTIME_MODEL).strip()
+    instructions = compose_instructions(SYSTEM_PROMPT, body.get("context"))
 
     # GA Realtime API (May 2026+): POST /v1/realtime/client_secrets,
     # session config nested, voice under session.audio.output, and no
@@ -140,7 +160,7 @@ async def handle_realtime_session(request: web.Request) -> web.Response:
         "session": {
             "type": "realtime",
             "model": model,
-            "instructions": SYSTEM_PROMPT,
+            "instructions": instructions,
             "audio": {
                 "input": {
                     "transcription": {"model": "whisper-1"},
@@ -246,8 +266,9 @@ async def handle_typed_turn(request: web.Request) -> web.Response:
     voice = (body.get("voice") or DEFAULT_TTS_VOICE).strip()
     llm_model = os.environ.get("OPENAI_LLM_MODEL", DEFAULT_LLM_MODEL)
     tts_model = os.environ.get("OPENAI_TTS_MODEL", DEFAULT_TTS_MODEL)
+    instructions = compose_instructions(SYSTEM_PROMPT, body.get("context"))
 
-    reply_text = await _chat_completion(api_key, llm_model, user_text)
+    reply_text = await _chat_completion(api_key, llm_model, user_text, instructions)
     audio_b64, mime = await _tts_speak(api_key, tts_model, voice, reply_text)
     return web.json_response(
         {
@@ -259,12 +280,14 @@ async def handle_typed_turn(request: web.Request) -> web.Response:
     )
 
 
-async def _chat_completion(api_key: str, model: str, user_text: str) -> str:
+async def _chat_completion(
+    api_key: str, model: str, user_text: str, instructions: Optional[str] = None
+) -> str:
     timeout = aiohttp.ClientTimeout(total=25)
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": instructions or SYSTEM_PROMPT},
             {"role": "user", "content": user_text},
         ],
         "temperature": 0.8,

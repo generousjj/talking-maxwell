@@ -178,6 +178,190 @@ $("headDrift").addEventListener("input", (e) => applyHeadDrift(parseFloat(e.targ
 // values on every page load.
 motionConfigReady.then(() => loadMotionPrefs());
 
+// ---- event / context presets ----
+// The selected context is appended to Maxwell's base personality
+// server-side (see compose_instructions). Built-in events cover the
+// recurring TEA showcases; guests/operators can also save their own
+// custom prompts which persist in this browser.
+
+const CUSTOM_PROMPTS_KEY = "maxwell:admits:customPrompts";
+const EVENT_ID_KEY = "maxwell:admits:eventId";
+const NEW_PROMPT_VALUE = "__new__";
+
+const BUILTIN_EVENTS = [
+  {
+    id: "admit",
+    label: "Admit Weekend Fair",
+    context:
+      "You are at the Stanford admit weekend fair, meeting admitted students "
+      + "who are deciding whether to come to Stanford. Be warm and welcoming, "
+      + "talk up Stanford TEA (Theater & Entertainment Arts) and the community.",
+  },
+  {
+    id: "nso",
+    label: "New Student Orientation (NSO)",
+    context:
+      "You are at New Student Orientation (NSO), greeting brand-new Stanford "
+      + "students as they arrive on campus. Help them feel at home and tell "
+      + "them about Stanford TEA and how to get involved.",
+  },
+  {
+    id: "breadbowl",
+    label: "Bay Area Breadbowl",
+    context:
+      "You are at the Bay Area Breadbowl, a theater showcase where students "
+      + "present and showcase their work to theater and entertainment "
+      + "professionals from around the Bay Area. Hype up the student performers "
+      + "and the showcase, and be encouraging to anyone nervous about presenting.",
+  },
+];
+
+function loadCustomPrompts() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(CUSTOM_PROMPTS_KEY) || "[]");
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) { return []; }
+}
+
+function saveCustomPrompts(list) {
+  try { localStorage.setItem(CUSTOM_PROMPTS_KEY, JSON.stringify(list)); } catch (_) {}
+}
+
+function renderEventSelect() {
+  const sel = $("eventSelect");
+  if (!sel) return;
+  const customs = loadCustomPrompts();
+  const prev = sel.value || localStorage.getItem(EVENT_ID_KEY) || "admit";
+  sel.innerHTML = "";
+
+  const builtinGroup = document.createElement("optgroup");
+  builtinGroup.label = "Events";
+  for (const ev of BUILTIN_EVENTS) {
+    const o = document.createElement("option");
+    o.value = ev.id;
+    o.textContent = ev.label;
+    builtinGroup.appendChild(o);
+  }
+  sel.appendChild(builtinGroup);
+
+  if (customs.length) {
+    const customGroup = document.createElement("optgroup");
+    customGroup.label = "Saved prompts";
+    for (const c of customs) {
+      const o = document.createElement("option");
+      o.value = c.id;
+      o.textContent = c.name || "Custom prompt";
+      customGroup.appendChild(o);
+    }
+    sel.appendChild(customGroup);
+  }
+
+  const newGroup = document.createElement("optgroup");
+  newGroup.label = "—";
+  const newOpt = document.createElement("option");
+  newOpt.value = NEW_PROMPT_VALUE;
+  newOpt.textContent = "➕ New custom prompt…";
+  newGroup.appendChild(newOpt);
+  sel.appendChild(newGroup);
+
+  const stillThere = Array.from(sel.options).some((o) => o.value === prev);
+  sel.value = stillThere ? prev : "admit";
+}
+
+// Resolve the context text for whatever is currently selected.
+function currentContextText() {
+  const sel = $("eventSelect");
+  if (!sel) return "";
+  const v = sel.value;
+  if (v === NEW_PROMPT_VALUE) {
+    return ($("customPromptText").value || "").trim();
+  }
+  const builtin = BUILTIN_EVENTS.find((e) => e.id === v);
+  if (builtin) return builtin.context;
+  const custom = loadCustomPrompts().find((c) => c.id === v);
+  return custom ? (custom.text || "") : "";
+}
+
+function syncCustomPromptEditor() {
+  const sel = $("eventSelect");
+  const editor = $("customPrompt");
+  const delBtn = $("customPromptDelete");
+  if (!sel || !editor) return;
+  const v = sel.value;
+  if (v === NEW_PROMPT_VALUE) {
+    editor.classList.add("visible");
+    $("customPromptName").value = "";
+    $("customPromptText").value = "";
+    delBtn.style.display = "none";
+  } else {
+    const custom = loadCustomPrompts().find((c) => c.id === v);
+    if (custom) {
+      editor.classList.add("visible");
+      $("customPromptName").value = custom.name || "";
+      $("customPromptText").value = custom.text || "";
+      delBtn.style.display = "inline-block";
+    } else {
+      // Built-in event: nothing to edit.
+      editor.classList.remove("visible");
+    }
+  }
+}
+
+async function onContextChanged() {
+  const sel = $("eventSelect");
+  if (sel && sel.value !== NEW_PROMPT_VALUE) {
+    try { localStorage.setItem(EVENT_ID_KEY, sel.value); } catch (_) {}
+  }
+  syncCustomPromptEditor();
+  // Context is baked into the session at mint time, so a running
+  // session must be restarted to pick up the new event/prompt.
+  if (rtIsRunning()) {
+    await stopRealtime();
+    await startRealtime();
+  }
+}
+
+function wireEventControls() {
+  renderEventSelect();
+  syncCustomPromptEditor();
+  $("eventSelect").addEventListener("change", onContextChanged);
+
+  $("customPromptSave").addEventListener("click", () => {
+    const name = ($("customPromptName").value || "").trim() || "Custom prompt";
+    const text = ($("customPromptText").value || "").trim();
+    if (!text) { setStatus("Add some prompt text first.", "busy"); return; }
+    const sel = $("eventSelect");
+    const list = loadCustomPrompts();
+    let id = sel.value;
+    if (id === NEW_PROMPT_VALUE || !list.some((c) => c.id === id)) {
+      // Create a new saved prompt.
+      id = "custom_" + Date.now().toString(36);
+      list.push({ id, name, text });
+    } else {
+      // Update the existing saved prompt in place.
+      const existing = list.find((c) => c.id === id);
+      if (existing) { existing.name = name; existing.text = text; }
+    }
+    saveCustomPrompts(list);
+    renderEventSelect();
+    $("eventSelect").value = id;
+    onContextChanged();
+    setStatus("Saved! Maxwell will use this prompt.", "live");
+  });
+
+  $("customPromptDelete").addEventListener("click", () => {
+    const sel = $("eventSelect");
+    const id = sel.value;
+    const list = loadCustomPrompts().filter((c) => c.id !== id);
+    saveCustomPrompts(list);
+    renderEventSelect();
+    $("eventSelect").value = "admit";
+    onContextChanged();
+  });
+}
+
+wireEventControls();
+
 // ---- realtime session ----
 
 let micMode = "ptt";   // "auto" or "ptt" — PTT is the guest default
@@ -242,6 +426,7 @@ async function startRealtime() {
       pttMode: micMode === "ptt",
       micDeviceId: ($("micDeviceSelect") && $("micDeviceSelect").value) || "",
       outputDeviceId: ($("outputDeviceSelect") && $("outputDeviceSelect").value) || "",
+      context: currentContextText(),
     });
     // After the mic is held once, device labels become non-empty —
     // re-render so the guest sees real device names.
