@@ -98,6 +98,9 @@ function setSerialState(s) {
   if (s.connected) {
     dot.classList.add("ok");
     $("serialLabel").textContent = s.mock ? "Mock (no hardware)" : "Connected";
+    // Disable Connect while a real connection is alive so a second
+    // click can't spin up a parallel transport and kill the first.
+    $("connectBtn").disabled = true;
     $("disconnectBtn").disabled = false;
     $("wakeBtn").disabled = false;
     $("centerBtn").disabled = false;
@@ -115,6 +118,14 @@ function setSerialState(s) {
     // and the frame loop never got a real transport.
     if (s.phase !== "closed") dot.classList.add("warn");
     $("serialLabel").textContent = s.phase === "closed" ? "Not connected" : (s.phase || "Disconnected");
+    // Connect is available again only when we're fully disconnected,
+    // not during phases like "handshake" where a connect is already
+    // in flight (the inline _connectInFlight guard covers those).
+    // "closed" = our own disconnect(). "disconnected" = OS yanked the
+    // USB cable / driver dropped it.
+    if (s.phase === "closed" || s.phase === "disconnected") {
+      $("connectBtn").disabled = false;
+    }
     $("disconnectBtn").disabled = true;
     $("wakeBtn").disabled = true;
     $("centerBtn").disabled = true;
@@ -164,7 +175,23 @@ function resolvedChannels() {
   return base || undefined;
 }
 
+let _connectInFlight = false;
 $("connectBtn").addEventListener("click", async () => {
+  // Hard guard against double-clicks. Without these checks a second
+  // click would (a) spin up a brand-new transport on the same USB
+  // port, (b) time out its handshake because the first transport is
+  // still holding the port, (c) call disconnect() on failure which
+  // closes the port — killing the perfectly-good first connection.
+  if (_connectInFlight) {
+    log("connect: already in progress, ignoring duplicate click");
+    return;
+  }
+  if (transport && transport.isConnected && transport.isConnected()) {
+    log("connect: already connected, ignoring duplicate click");
+    return;
+  }
+  _connectInFlight = true;
+  $("connectBtn").disabled = true;
   try {
     const mock = $("mockBtn").checked;
     const channels = resolvedChannels();
@@ -178,6 +205,14 @@ $("connectBtn").addEventListener("click", async () => {
     setSerialState({ connected: false, phase: "closed" });
     transport = null;
     scheduler.setTransport(null);
+  } finally {
+    _connectInFlight = false;
+    // Re-enable the Connect button only if we aren't successfully
+    // connected — the connected-state handler in setSerialState
+    // already handles the "connected" branch by leaving it disabled.
+    if (!transport || !transport.isConnected || !transport.isConnected()) {
+      $("connectBtn").disabled = false;
+    }
   }
 });
 
