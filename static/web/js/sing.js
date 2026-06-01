@@ -22,6 +22,7 @@ import { EnvelopeFollower, DEFAULT_JAW_CALIBRATION } from "./envelope.js";
 import { BehaviorEngine, DEFAULT_GAINS } from "./behavior.js";
 import { MotionScheduler } from "./motion.js";
 import { LiveSpeakingContext } from "./live_speaking_context.js";
+import { TypedSession } from "./typed.js";
 import {
   listAudioDevices,
   renderDeviceSelect,
@@ -746,6 +747,51 @@ function refreshPlayButton() {
   if (!timeline) return;
   $("playBtn").disabled = false;
 }
+
+// ---- "make Maxwell talk" (typed speech when not singing) ----
+//
+// Reuses the operator/admits TypedSession (LLM reply -> TTS mp3). We pass
+// it our LiveSpeakingContext so the behavior engine's jaw/head/wings move
+// while he talks — note the scheduler's onFrame dance override only kicks
+// in while a song is `playing`, so during typed speech the normal
+// conversational behavior drives the body, exactly what we want here.
+
+const typed = new TypedSession({
+  envelope,
+  behavior,
+  speakingContext: speakingCtx,
+  log: silentLog,
+  onState: (state) => {
+    const btn = $("sayBtn");
+    if (state === "thinking") {
+      btn.disabled = true;
+      $("sayReply").textContent = "Maxwell is thinking…";
+    } else if (state === "speaking") {
+      btn.disabled = true;
+    } else {
+      btn.disabled = false;
+    }
+  },
+  onTranscript: ({ role, text }) => {
+    if (role === "assistant") $("sayReply").textContent = `Maxwell: “${text}”`;
+  },
+});
+
+async function sendSay() {
+  const input = $("sayInput");
+  const text = (input.value || "").trim();
+  if (!text) return;
+  // Don't talk over a song — stop singing first so the jaw is free.
+  if (playing) stopPlayback();
+  input.value = "";
+  const dev = ($("outputDeviceSelect") && $("outputDeviceSelect").value) || "";
+  await typed.send(text, { voice: "ballad", outputDeviceId: dev });
+}
+
+$("sayBtn").addEventListener("click", sendSay);
+$("sayInput").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); sendSay(); }
+});
 
 // ---- cleanup ----
 

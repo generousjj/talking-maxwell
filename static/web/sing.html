@@ -172,6 +172,27 @@
     color: var(--maxwell-purple-2); min-width: 3.2rem; text-align: right; }
   .hint { font-size: .8rem; font-weight: 500; color: var(--maxwell-brown); opacity: .75; }
 
+  /* ---- say something ---- */
+  .say-row { display: flex; gap: .6rem; }
+  #sayInput {
+    flex: 1; font-family: inherit; font-size: 1.05rem; font-weight: 500;
+    padding: .7rem 1rem; border-radius: 16px;
+    border: 2px solid #ede9fe; background: #faf9ff;
+    color: var(--maxwell-brown-2);
+  }
+  #sayBtn {
+    font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 1.05rem;
+    padding: .7rem 1.5rem; border-radius: 16px; cursor: pointer;
+    border: none; color: white;
+    background: linear-gradient(160deg, var(--maxwell-blue) 0%, var(--maxwell-blue-2) 100%);
+    box-shadow: 0 4px 12px rgba(59,142,219,.35);
+    transition: transform .08s;
+  }
+  #sayBtn:active { transform: translateY(2px); }
+  #sayBtn:disabled { opacity: .5; cursor: not-allowed; }
+  #sayReply { margin-top: .7rem; font-weight: 600; color: var(--maxwell-purple-2);
+    min-height: 1.3em; font-size: .98rem; }
+
   footer { text-align: center; margin-top: 1.25rem; font-size: .85rem;
     color: var(--maxwell-brown); opacity: .8; }
   footer a { color: var(--maxwell-purple-2); text-decoration: none; font-weight: 700; }
@@ -244,6 +265,16 @@
       </div>
     </label>
   </div>
+</section>
+
+<section class="card">
+  <h2>Make Maxwell talk</h2>
+  <p class="hint" style="margin:0 0 .75rem;">Type something and Maxwell will say it (when he's not singing).</p>
+  <div class="say-row">
+    <input id="sayInput" type="text" placeholder="Say hi to the crowd…" autocomplete="off">
+    <button id="sayBtn" type="button">Say it</button>
+  </div>
+  <div id="sayReply"></div>
 </section>
 
 <footer>

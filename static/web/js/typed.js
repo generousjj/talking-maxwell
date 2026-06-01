@@ -14,18 +14,26 @@ function base64ToBytes(b64) {
 }
 
 export class TypedSession {
-  constructor({ envelope, behavior, log = () => {}, onState = () => {}, onTranscript = () => {} }) {
+  constructor({ envelope, behavior, speakingContext = null, log = () => {}, onState = () => {}, onTranscript = () => {} }) {
     this.envelope = envelope;
     this.behavior = behavior;
+    // Optional LiveSpeakingContext. When provided we feed it the TTS
+    // RMS so the browser behavior engine's jaw/head/wing (which read
+    // ctx.envelope, not the jaw follower) actually move during typed
+    // speech, matching realtime mode. Callers that don't pass one keep
+    // the previous behavior.
+    this.speakingContext = speakingContext;
     this.log = log;
     this.onState = onState;
     this.onTranscript = onTranscript;
     this.audioCtx = null;
     this._speaking = false;
+    this._outputDeviceId = "";
   }
 
-  async send(text, { voice = "ballad" } = {}) {
+  async send(text, { voice = "ballad", outputDeviceId = "" } = {}) {
     if (!text || this._speaking) return;
+    this._outputDeviceId = outputDeviceId || "";
     this.onTranscript({ role: "user", text, final: true });
     this.onState("thinking");
     this.behavior && this.behavior.setState("thinking");
@@ -61,6 +69,9 @@ export class TypedSession {
       return;
     }
     this.onTranscript({ role: "assistant", text: resp.text, final: true });
+    // Prime phrase/emphasis heuristics (question_like, excited) from the
+    // reply text so nods/tilts fire while he talks.
+    if (this.speakingContext) this.speakingContext.setUtterance({ text: resp.text });
     await this._speakMp3(resp.audio_b64);
   }
 
@@ -75,6 +86,11 @@ export class TypedSession {
     // was available).
     if (ctx.state === "suspended") {
       try { await ctx.resume(); } catch (_) {}
+    }
+    // Route to the chosen speaker when the browser supports per-context
+    // output routing (Chrome 110+). Best-effort; falls back to default.
+    if (this._outputDeviceId && typeof ctx.setSinkId === "function") {
+      try { await ctx.setSinkId(this._outputDeviceId); } catch (_) {}
     }
     this.log(`typed: audio ctx state=${ctx.state}`);
     const buf = await ctx.decodeAudioData(bytes.buffer.slice(0));
@@ -99,6 +115,7 @@ export class TypedSession {
       for (let i = 0; i < tmp.length; i++) sum += tmp[i] * tmp[i];
       const rms = Math.sqrt(sum / tmp.length);
       this.envelope && this.envelope.processRms(rms);
+      this.speakingContext && this.speakingContext.updateFromRms(rms);
       requestAnimationFrame(poll);
     };
     poll();
@@ -106,6 +123,7 @@ export class TypedSession {
     src.addEventListener("ended", () => {
       this._speaking = false;
       this.envelope && this.envelope.reset();
+      this.speakingContext && this.speakingContext.updateFromRms(0);
       this.onState("idle");
       this.behavior && this.behavior.setState("idle");
     });
