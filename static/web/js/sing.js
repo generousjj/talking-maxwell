@@ -110,21 +110,25 @@ const scheduler = new MotionScheduler({
   onFrame: (frame) => {
     if (!playing) return;
     const now = performance.now() / 1000;
-    // Baseline groove (0.4) so he's never frozen, scaling up with energy.
-    const amp = 0.4 + 0.6 * Math.min(1, danceLevel * 1.6);
-    // 1.0 during instrumental, ~0.2 while sustaining a vocal line.
-    const danceFactor = 1 - 0.8 * voxLevel;
-    const sway = 0.30 * amp * danceFactor * yawPos;
-    // Bob is mostly beat-driven (musical), plus a tiny groove sine; both
-    // back off while singing so the head stays forward on long words.
-    const beatBob = 0.20 * danceBeat * danceFactor;
-    const grooveBob = 0.05 * amp * danceFactor * Math.sin(now * TAU * 1.1);
+    // Baseline groove (0.45) so he's never frozen, scaling up with energy.
+    const amp = 0.45 + 0.55 * Math.min(1, danceLevel * 1.6);
+    // 1.0 during instrumental, ~0.35 while sustaining a vocal line (kept
+    // off the floor so there's still visible head motion when singing).
+    const danceFactor = 1 - 0.65 * voxLevel;
+    const sway = 0.40 * amp * danceFactor * yawPos;
+    // Bob is mostly beat-driven (musical), plus a small groove sine; both
+    // ease off while singing so the head stays forward-ish on long words.
+    const beatBob = 0.26 * danceBeat * danceFactor;
+    const grooveBob = 0.07 * amp * danceFactor * Math.sin(now * TAU * 1.1);
+    // Gentle nod tied to the lyrics so "facing forward" during vocals
+    // still has life (he nods along to the words) instead of going stiff.
+    const singNod = 0.11 * voxLevel * jawSmoothed;
     // Wings keep flapping while singing but harder during instrumentals.
     const flap = Math.min(1, 0.2 + 0.9 * danceBeat)
       * (0.45 + 0.55 * Math.sin(now * TAU * 2.0))
       * (0.55 + 0.45 * danceFactor);
     frame.head_lr = clamp01(0.5 + sway);
-    frame.head_ud = clamp01(0.5 - beatBob - grooveBob);
+    frame.head_ud = clamp01(0.5 - beatBob - grooveBob - singNod);
     frame.wing = clamp01(flap);
     frame.jaw = clamp01(jawSmoothed);
   },
@@ -615,8 +619,8 @@ function driveMotion() {
 
   // Organic head-turn: re-pick a random target occasionally and ease
   // toward it, so the yaw wanders naturally instead of ticking L-R-L-R.
-  if (Math.random() < 0.012) yawTarget = Math.random() * 2 - 1;
-  yawPos += 0.045 * (yawTarget - yawPos);
+  if (Math.random() < 0.016) yawTarget = Math.random() * 2 - 1;
+  yawPos += 0.06 * (yawTarget - yawPos);
 
   // Jaw mouths the isolated vocals. Same attack/release as the jaw
   // envelope follower, with the live jaw-gain slider as the multiplier.
