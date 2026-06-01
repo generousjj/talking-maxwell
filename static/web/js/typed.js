@@ -14,9 +14,12 @@ function base64ToBytes(b64) {
 }
 
 export class TypedSession {
-  constructor({ envelope, behavior, speakingContext = null, log = () => {}, onState = () => {}, onTranscript = () => {} }) {
+  constructor({ envelope, behavior, speakingContext = null, endpoint = "/api/web/typed", log = () => {}, onState = () => {}, onTranscript = () => {} }) {
     this.envelope = envelope;
     this.behavior = behavior;
+    // Which server turn to call. Default is the LLM+TTS chat turn; pass
+    // "/api/web/tts" for verbatim text-to-speech with no LLM in the loop.
+    this.endpoint = endpoint;
     // Optional LiveSpeakingContext. When provided we feed it the TTS
     // RMS so the browser behavior engine's jaw/head/wing (which read
     // ctx.envelope, not the jaw follower) actually move during typed
@@ -58,7 +61,7 @@ export class TypedSession {
 
     let resp;
     try {
-      resp = await apiJson("/api/web/typed", {
+      resp = await apiJson(this.endpoint, {
         method: "POST",
         body: { text, voice },
       });

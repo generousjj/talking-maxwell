@@ -760,12 +760,14 @@ const typed = new TypedSession({
   envelope,
   behavior,
   speakingContext: speakingCtx,
+  // Verbatim text-to-speech — no LLM. Maxwell says exactly what's typed.
+  endpoint: "/api/web/tts",
   log: silentLog,
   onState: (state) => {
     const btn = $("sayBtn");
     if (state === "thinking") {
       btn.disabled = true;
-      $("sayReply").textContent = "Maxwell is thinking…";
+      $("sayReply").textContent = "Warming up Maxwell's voice…";
     } else if (state === "speaking") {
       btn.disabled = true;
     } else {

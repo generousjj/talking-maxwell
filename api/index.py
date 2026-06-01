@@ -628,6 +628,38 @@ async def typed_turn(request: Request):
     )
 
 
+@app.post("/api/web/tts")
+async def tts_turn(request: Request):
+    """Direct text-to-speech: speak the supplied text verbatim (no LLM).
+
+    Used by the sing page's "make Maxwell talk" field so the operator can
+    put exact words in his mouth. Returns the same shape as
+    ``/api/web/typed`` (``text`` echoes the input) so the browser
+    playback path is identical.
+    """
+    if not OPENAI_API_KEY:
+        return JSONResponse(
+            {"ok": False, "error": "openai_key_missing"}, status_code=503
+        )
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    text = str(body.get("text") or "").strip()[:600]
+    if not text:
+        return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
+    voice = (body.get("voice") or DEFAULT_TTS_VOICE).strip()
+    tts_model = os.environ.get("OPENAI_TTS_MODEL", DEFAULT_TTS_MODEL)
+
+    audio_b64_mime = await _tts_speak(tts_model, voice, text)
+    if isinstance(audio_b64_mime, JSONResponse):
+        return audio_b64_mime
+    audio_b64, mime = audio_b64_mime
+    return JSONResponse(
+        {"ok": True, "text": text, "audio_b64": audio_b64, "mime": mime}
+    )
+
+
 # --------------------------------------------------------------------
 # Song lip-sync ("jukebox") endpoints
 # --------------------------------------------------------------------

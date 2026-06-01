@@ -380,6 +380,32 @@ async def handle_typed_turn(request: web.Request) -> web.Response:
     )
 
 
+async def handle_tts_turn(request: web.Request) -> web.Response:
+    """Direct text-to-speech: speak the supplied text verbatim (no LLM).
+
+    Used by the sing page so the operator can put exact words in
+    Maxwell's mouth. Returns the same ``{ok, text, audio_b64, mime}``
+    shape as ``/api/web/typed`` (``text`` echoes the input).
+    """
+    api_key = _require_openai_key(request)
+    if isinstance(api_key, web.Response):
+        return api_key
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    text = str(body.get("text") or "").strip()[:600]
+    if not text:
+        return web.json_response({"ok": False, "error": "empty"}, status=400)
+    voice = (body.get("voice") or DEFAULT_TTS_VOICE).strip()
+    tts_model = os.environ.get("OPENAI_TTS_MODEL", DEFAULT_TTS_MODEL)
+
+    audio_b64, mime = await _tts_speak(api_key, tts_model, voice, text)
+    return web.json_response(
+        {"ok": True, "text": text, "audio_b64": audio_b64, "mime": mime}
+    )
+
+
 async def _chat_completion(
     api_key: str, model: str, user_text: str, instructions: Optional[str] = None
 ) -> str:
@@ -598,6 +624,7 @@ def build_app(
 
     app.router.add_post("/api/web/realtime/session", handle_realtime_session)
     app.router.add_post("/api/web/typed", handle_typed_turn)
+    app.router.add_post("/api/web/tts", handle_tts_turn)
     app.router.add_get("/api/web/song/search", handle_song_search)
     app.router.add_get("/api/web/song/audio", handle_song_audio)
 
