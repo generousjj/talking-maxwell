@@ -69,10 +69,29 @@ export class WebSerialTransport {
     let ports = [];
     try { ports = await navigator.serial.getPorts(); } catch (_) { return false; }
     if (!ports.length) return false;
+    const port = ports[0];
     try {
-      const port = ports[0];
       await port.open({ baudRate: BAUD });
-      return this._finishConnect(port);
+    } catch (e) {
+      const msg = (e && (e.message || String(e))) || "";
+      // Common race: another tab on the same origin still holds the
+      // port, or our own previous connect attempt didn't release it.
+      // Close-then-reopen recovers cleanly in both cases instead of
+      // leaving the user stuck.
+      if (/already open/i.test(msg)) {
+        try { await port.close(); } catch (_) {}
+        try { await port.open({ baudRate: BAUD }); }
+        catch (e2) {
+          this.log(`auto-connect failed: ${e2.message || e2}`);
+          return false;
+        }
+      } else {
+        this.log(`auto-connect failed: ${msg}`);
+        return false;
+      }
+    }
+    try {
+      return await this._finishConnect(port);
     } catch (e) {
       this.log(`auto-connect failed: ${e.message || e}`);
       return false;

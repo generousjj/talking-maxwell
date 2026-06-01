@@ -198,11 +198,13 @@ async def test_realtime_session_hides_raw_api_key(monkeypatch_env=None):
             captured["url"] = url
             captured["headers"] = headers
             captured["data"] = data
+            # GA Realtime: response shape has `value` at top level.
             return FakeCtx(
                 200,
                 {
-                    "id": "sess_test",
-                    "client_secret": {"value": EPHEMERAL_TOKEN, "expires_at": 1234567890},
+                    "value": EPHEMERAL_TOKEN,
+                    "expires_at": 1234567890,
+                    "session": {"id": "sess_test", "type": "realtime"},
                 },
             )
 
@@ -215,6 +217,8 @@ async def test_realtime_session_hides_raw_api_key(monkeypatch_env=None):
         assert resp.status == 200
         body = await resp.json()
         assert body["client_secret"] == EPHEMERAL_TOKEN
+        assert captured["url"].endswith("/v1/realtime/client_secrets")
+        assert "OpenAI-Beta" not in (captured["headers"] or {})
         assert RAW_API_KEY in captured["headers"]["Authorization"]
         assert RAW_API_KEY not in json.dumps(body)
     finally:

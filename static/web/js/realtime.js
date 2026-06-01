@@ -127,14 +127,16 @@ export class RealtimeSession {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
+    // GA Realtime API (post May 2026): SDP exchange moved from
+    // `/v1/realtime?model=...` to `/v1/realtime/calls?model=...` and
+    // the OpenAI-Beta header is no longer accepted.
     const sdpResp = await fetch(
-      `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
+      `https://api.openai.com/v1/realtime/calls?model=${encodeURIComponent(model)}`,
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/sdp",
-          "OpenAI-Beta": "realtime=v1",
         },
         body: offer.sdp,
       }
@@ -256,15 +258,21 @@ export class RealtimeSession {
 
   _onDcOpen() {
     this.log("data channel open");
+    // GA Realtime: session.update requires session.type and nests
+    // turn_detection/transcription under session.audio.input.
     const turn_detection = this._pttMode
       ? null
       : { type: "server_vad", threshold: 0.65, prefix_padding_ms: 300, silence_duration_ms: 650 };
     this._dcSend({
       type: "session.update",
       session: {
-        voice: undefined,      // keep server default from our ephemeral session
-        turn_detection,
-        input_audio_transcription: { model: "whisper-1" },
+        type: "realtime",
+        audio: {
+          input: {
+            transcription: { model: "whisper-1" },
+            turn_detection,
+          },
+        },
       },
     });
   }
@@ -278,7 +286,11 @@ export class RealtimeSession {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (_) { return; }
     const t = msg.type || "";
-    if (t === "response.audio_transcript.delta") {
+    // GA event names use "output_audio_transcript" / "output_audio".
+    // Pre-GA used "audio_transcript" / "audio". Handle both so a
+    // single binary serves both pre-GA and GA accounts.
+    if (t === "response.audio_transcript.delta"
+        || t === "response.output_audio_transcript.delta") {
       this._pendingAssistant += msg.delta || "";
       // Feed assistant text into the speaking context so question_like
       // / excited reflect the utterance in flight (same heuristic as
@@ -286,14 +298,17 @@ export class RealtimeSession {
       if (this.speakingContext && msg.delta) {
         this.speakingContext.appendText(msg.delta);
       }
-    } else if (t === "response.audio_transcript.done") {
+    } else if (t === "response.audio_transcript.done"
+            || t === "response.output_audio_transcript.done") {
       const text = (msg.transcript || this._pendingAssistant || "").trim();
       if (text) this.onTranscript({ role: "assistant", text, final: true });
       if (this.speakingContext) {
         this.speakingContext.setUtterance({ text });
       }
       this._pendingAssistant = "";
-    } else if (t === "conversation.item.input_audio_transcription.completed") {
+    } else if (t === "conversation.item.input_audio_transcription.completed"
+            || t === "conversation.item.input_audio_transcription_completed"
+            || t === "conversation.item.input_audio_transcription.done") {
       const text = (msg.transcript || "").trim();
       if (text) this.onTranscript({ role: "user", text, final: true });
     } else if (t === "input_audio_buffer.speech_started") {
@@ -305,7 +320,9 @@ export class RealtimeSession {
       this.onState("thinking");
     } else if (t === "response.done" || t === "response.cancelled" || t === "response.failed") {
       this._responseActive = false;
-    } else if (t === "response.audio.delta" || t === "output_audio_buffer.started") {
+    } else if (t === "response.audio.delta"
+            || t === "response.output_audio.delta"
+            || t === "output_audio_buffer.started") {
       // Enter SPEAKING as soon as audio starts flowing. We stay here
       // until either the WebRTC output buffer actually drains OR the
       // envelope-silence watchdog catches sustained silence — NOT

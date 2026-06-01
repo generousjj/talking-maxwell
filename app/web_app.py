@@ -44,7 +44,7 @@ from app.personality import load_personality
 
 log = logging.getLogger(__name__)
 
-DEFAULT_REALTIME_MODEL = "gpt-4o-realtime-preview"
+DEFAULT_REALTIME_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "ballad"
 DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "ballad"
@@ -131,33 +131,39 @@ async def handle_realtime_session(request: web.Request) -> web.Response:
     voice = (body.get("voice") or DEFAULT_REALTIME_VOICE).strip()
     model = (body.get("model") or DEFAULT_REALTIME_MODEL).strip()
 
-    # OpenAI's documented ephemeral-session endpoint. Parameters we
-    # pass here become the defaults for the WebRTC session.
+    # GA Realtime API (May 2026+): POST /v1/realtime/client_secrets,
+    # session config nested, voice under session.audio.output, and no
+    # OpenAI-Beta header. The pre-GA /v1/realtime/sessions endpoint
+    # returns HTTP 400 "Invalid URL" after the May 2026 deprecation.
     payload = {
-        "model": model,
-        "voice": voice,
-        "modalities": ["audio", "text"],
-        "instructions": SYSTEM_PROMPT,
-        "input_audio_format": "pcm16",
-        "output_audio_format": "pcm16",
-        "input_audio_transcription": {"model": "whisper-1"},
-        "turn_detection": {
-            "type": "server_vad",
-            "threshold": 0.65,
-            "prefix_padding_ms": 300,
-            "silence_duration_ms": 650,
+        "expires_after": {"anchor": "created_at", "seconds": 600},
+        "session": {
+            "type": "realtime",
+            "model": model,
+            "instructions": SYSTEM_PROMPT,
+            "audio": {
+                "input": {
+                    "transcription": {"model": "whisper-1"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.65,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 650,
+                    },
+                },
+                "output": {"voice": voice},
+            },
         },
     }
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "OpenAI-Beta": "realtime=v1",
     }
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            "https://api.openai.com/v1/realtime/sessions",
+            "https://api.openai.com/v1/realtime/client_secrets",
             headers=headers,
             data=json.dumps(payload),
         ) as resp:
@@ -192,7 +198,15 @@ async def handle_realtime_session(request: web.Request) -> web.Response:
                     {"ok": False, "error": "openai_parse"}, status=502
                 )
 
-    client_secret = (data.get("client_secret") or {}).get("value")
+    # GA shape puts token at top-level `value`; legacy /sessions nested
+    # under client_secret.value. Accept both for resilience.
+    client_secret = data.get("value")
+    if not client_secret:
+        legacy = data.get("client_secret")
+        if isinstance(legacy, dict):
+            client_secret = legacy.get("value")
+        elif isinstance(legacy, str):
+            client_secret = legacy
     if not client_secret:
         return web.json_response(
             {"ok": False, "error": "no_ephemeral"}, status=502

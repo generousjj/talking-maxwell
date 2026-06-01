@@ -180,14 +180,14 @@ def test_realtime_session_hides_raw_api_key(client, monkeypatch):
             captured["url"] = url
             captured["headers"] = headers
             captured["content"] = content
+            # GA Realtime API returns the token at the top-level
+            # `value` field.
             return FakeResponse(
                 200,
                 {
-                    "id": "sess_test",
-                    "client_secret": {
-                        "value": EPHEMERAL_TOKEN,
-                        "expires_at": 1234567890,
-                    },
+                    "value": EPHEMERAL_TOKEN,
+                    "expires_at": 1234567890,
+                    "session": {"id": "sess_test", "type": "realtime"},
                 },
             )
 
@@ -198,6 +198,10 @@ def test_realtime_session_hides_raw_api_key(client, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["client_secret"] == EPHEMERAL_TOKEN
+    # Hit the GA client_secrets endpoint, not the deprecated /sessions.
+    assert captured["url"].endswith("/v1/realtime/client_secrets")
+    # No OpenAI-Beta header on GA — the API rejects it now.
+    assert "OpenAI-Beta" not in (captured["headers"] or {})
     # Raw key goes server -> OpenAI, never in the response body.
     assert RAW_API_KEY in captured["headers"]["Authorization"]
     assert RAW_API_KEY not in json.dumps(body)

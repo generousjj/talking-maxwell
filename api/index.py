@@ -62,7 +62,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ---- Config (shared across deploy targets) ----------------------------
 
-DEFAULT_REALTIME_MODEL = "gpt-4o-realtime-preview"
+DEFAULT_REALTIME_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "ballad"
 DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_TTS_VOICE = "ballad"
@@ -344,30 +344,38 @@ async def realtime_session(request: Request):
     voice = (body.get("voice") or DEFAULT_REALTIME_VOICE).strip()
     model = (body.get("model") or DEFAULT_REALTIME_MODEL).strip()
 
+    # OpenAI deprecated /v1/realtime/sessions in May 2026. The GA flow
+    # is now POST /v1/realtime/client_secrets with the session config
+    # nested, voice under session.audio.output, and no OpenAI-Beta
+    # header. Token comes back as the top-level `value` field.
     payload = {
-        "model": model,
-        "voice": voice,
-        "modalities": ["audio", "text"],
-        "instructions": SYSTEM_PROMPT,
-        "input_audio_format": "pcm16",
-        "output_audio_format": "pcm16",
-        "input_audio_transcription": {"model": "whisper-1"},
-        "turn_detection": {
-            "type": "server_vad",
-            "threshold": 0.65,
-            "prefix_padding_ms": 300,
-            "silence_duration_ms": 650,
+        "expires_after": {"anchor": "created_at", "seconds": 600},
+        "session": {
+            "type": "realtime",
+            "model": model,
+            "instructions": SYSTEM_PROMPT,
+            "audio": {
+                "input": {
+                    "transcription": {"model": "whisper-1"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.65,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 650,
+                    },
+                },
+                "output": {"voice": voice},
+            },
         },
     }
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
-        "OpenAI-Beta": "realtime=v1",
     }
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/realtime/sessions",
+                "https://api.openai.com/v1/realtime/client_secrets",
                 headers=headers,
                 content=json.dumps(payload),
             )
@@ -405,14 +413,25 @@ async def realtime_session(request: Request):
         data = resp.json()
     except Exception:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": "openai_parse"}, status_code=502)
-    client_secret = (data.get("client_secret") or {}).get("value")
+    # GA shape: { "value": "ek_...", "expires_at": ..., "session": {...} }
+    # Pre-GA shape (legacy /sessions): { "client_secret": {"value": "ek_..."} }
+    # Tolerate both so an account that hasn't fully rolled to GA still works.
+    client_secret = data.get("value")
+    expires_at = data.get("expires_at")
+    if not client_secret:
+        legacy = data.get("client_secret")
+        if isinstance(legacy, dict):
+            client_secret = legacy.get("value")
+            expires_at = legacy.get("expires_at") or expires_at
+        elif isinstance(legacy, str):
+            client_secret = legacy
     if not client_secret:
         return JSONResponse({"ok": False, "error": "no_ephemeral"}, status_code=502)
     return JSONResponse(
         {
             "ok": True,
             "client_secret": client_secret,
-            "expires_at": (data.get("client_secret") or {}).get("expires_at"),
+            "expires_at": expires_at,
             "model": model,
             "voice": voice,
         }
