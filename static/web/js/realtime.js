@@ -305,6 +305,14 @@ export class RealtimeSession {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (_) { return; }
     const t = msg.type || "";
+    // Temporary debug: log every unique event type the server sends.
+    // GA renamed several events and may use entirely new names for
+    // WebRTC builds. Will trim once we know what's actually arriving.
+    if (!this._seenEventTypes) this._seenEventTypes = new Set();
+    if (!this._seenEventTypes.has(t)) {
+      this._seenEventTypes.add(t);
+      this.log(`evt: ${t}`);
+    }
     // GA event names use "output_audio_transcript" / "output_audio".
     // Pre-GA used "audio_transcript" / "audio". Handle both so a
     // single binary serves both pre-GA and GA accounts.
@@ -375,6 +383,19 @@ export class RealtimeSession {
   _onRemoteTrack(ev) {
     const [stream] = ev.streams;
     this.remoteStream = stream;
+    // Temporary diagnostics: confirm we're getting an audio track and
+    // record its initial readyState. If muted=true / readyState=ended
+    // we'll know audio never landed and we're chasing the wrong issue.
+    const tracks = stream ? stream.getAudioTracks() : [];
+    if (tracks.length === 0) {
+      this.log("remote track event: NO audio tracks in stream!");
+    } else {
+      const t = tracks[0];
+      this.log(`remote audio track: ready=${t.readyState} muted=${t.muted} enabled=${t.enabled}`);
+      t.addEventListener && t.addEventListener("unmute", () => this.log("remote track unmuted"));
+      t.addEventListener && t.addEventListener("mute", () => this.log("remote track muted"));
+      t.addEventListener && t.addEventListener("ended", () => this.log("remote track ended"));
+    }
 
     // Play through <audio> so the browser mixes it to the speakers.
     if (!this.audioEl) {
@@ -421,6 +442,10 @@ export class RealtimeSession {
     src.connect(an);
     this.analyser = an;
     this._analysisBuf = new Float32Array(an.fftSize);
+    this.log(`audio ctx state at analyser hookup: ${ctx.state}`);
+    // One-shot log when the envelope first goes above the noise floor
+    // so we can confirm the analyser actually sees audio.
+    this._envFirstSeenLogged = false;
     // 50 Hz envelope updates is plenty for a servo; the behavior tick
     // runs at 30 Hz and picks up whatever the follower has smoothed.
     this._analysisTimer = setInterval(() => this._pumpEnvelope(), 20);
@@ -430,6 +455,10 @@ export class RealtimeSession {
     if (!this.analyser || !this.envelope) return;
     this.analyser.getFloatTimeDomainData(this._analysisBuf);
     const rms = rmsOf(this._analysisBuf);
+    if (!this._envFirstSeenLogged && rms > 0.01) {
+      this._envFirstSeenLogged = true;
+      this.log(`first audio detected by analyser (rms=${rms.toFixed(4)})`);
+    }
     this.envelope.processRms(rms);
     // Same RMS feeds the separate (higher-gain) behavior envelope.
     if (this.speakingContext) this.speakingContext.updateFromRms(rms);
