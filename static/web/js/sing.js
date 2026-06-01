@@ -861,7 +861,11 @@ async function setAutoMode(on) {
   if (autoMode) {
     ensureAudioContext();
     if (!serialReady) {
-      try { await connectHardware({ requireUserGesture: false }); } catch (_) {}
+      // The toggle is a user gesture, so connect for real here (connect()
+      // tries an already-authorized port silently first and only shows
+      // the picker if needed). Without this the bird never connects in
+      // showtime and the clip plays to a frozen Maxwell.
+      try { await connectHardware({ requireUserGesture: true }); } catch (_) {}
     }
     fillerAttempts = 0;
     playRandomFiller();
