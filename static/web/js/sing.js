@@ -83,6 +83,15 @@ let danceBeat = 0;    // punchy per-beat energy (bob + wing pumps)
 let voxLevel = 0;     // sustained vocal presence (0..1): high while singing
 let yawTarget = 0;    // organic head-turn target in [-1,1], wanders randomly
 let yawPos = 0;       // smoothed actual head turn -> avoids metronome left/right
+// Discrete wing-flap "gestures": parrots snap their wings up on an accent
+// and settle, they don't oscillate in/out forever. We trigger a short
+// burst on a rising strong beat and otherwise keep the wings tucked.
+let prevBeat = 0;
+let wingStart = -10;  // time the current flap burst began (s)
+let wingDur = 0.4;    // how long the burst lasts (s)
+let wingAmp = 0;      // burst height (0..1), scaled by the accent
+let wingFlaps = 1;    // 1 or 2 flaps in the burst
+let lastWingAt = -10; // cooldown bookkeeping
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 let motionConfig = null;
@@ -124,13 +133,20 @@ const scheduler = new MotionScheduler({
     // Gentle nod tied to the lyrics so "facing forward" during vocals
     // still has life (he nods along to the words) instead of going stiff.
     const singNod = 0.11 * voxLevel * jawSmoothed;
-    // Wings keep flapping while singing but harder during instrumentals.
-    const flap = Math.min(1, 0.2 + 0.9 * danceBeat)
-      * (0.45 + 0.55 * Math.sin(now * TAU * 2.0))
-      * (0.55 + 0.45 * danceFactor);
+    // Wings: a small lifted "engaged" posture during energetic parts,
+    // plus the discrete flap burst when one is active (see driveMotion).
+    const rest = 0.12 * danceLevel;
+    let wing = rest;
+    const wt = (now - wingStart) / wingDur;
+    if (wt >= 0 && wt < 1) {
+      // wingFlaps half-sine humps that open and settle back, with a
+      // slight decay so the burst tapers off naturally.
+      const shape = Math.abs(Math.sin(Math.PI * wt * wingFlaps)) * (1 - 0.3 * wt);
+      wing = Math.max(rest, wingAmp * shape);
+    }
     frame.head_lr = clamp01(0.5 + sway);
     frame.head_ud = clamp01(0.5 - beatBob - grooveBob - singNod);
-    frame.wing = clamp01(flap);
+    frame.wing = clamp01(wing);
     frame.jaw = clamp01(jawSmoothed);
   },
 });
@@ -627,6 +643,10 @@ function startPlayback() {
   voxLevel = 0;
   yawTarget = 0;
   yawPos = 0;
+  prevBeat = 0;
+  wingStart = -10;
+  lastWingAt = -10;
+  wingAmp = 0;
   behavior.setState("speaking");
   playing = true;
   $("playBtn").textContent = "Stop";
@@ -663,6 +683,20 @@ function driveMotion() {
   if (Math.random() < 0.016) yawTarget = Math.random() * 2 - 1;
   yawPos += 0.06 * (yawTarget - yawPos);
 
+  // Wing-flap trigger: fire a discrete burst on a rising strong beat
+  // (the accent's attack), respecting a cooldown so the wings don't just
+  // oscillate. Two flaps on a really big hit, otherwise one.
+  const nowS = performance.now() / 1000;
+  const rising = danceBeat - prevBeat;
+  prevBeat = danceBeat;
+  if (danceBeat > 0.45 && rising > 0.10 && (nowS - lastWingAt) > 0.45) {
+    lastWingAt = nowS;
+    wingStart = nowS;
+    wingAmp = Math.min(1, 0.55 + 0.5 * danceBeat);
+    wingFlaps = danceBeat > 0.9 ? 2 : 1;
+    wingDur = wingFlaps === 2 ? 0.6 : 0.4;
+  }
+
   // Jaw mouths the isolated vocals. Same attack/release as the jaw
   // envelope follower, with the live jaw-gain slider as the multiplier.
   const cal = envelope.calibration;
@@ -688,6 +722,10 @@ function stopPlayback() {
   voxLevel = 0;
   yawPos = 0;
   yawTarget = 0;
+  prevBeat = 0;
+  wingStart = -10;
+  lastWingAt = -10;
+  wingAmp = 0;
   speakingCtx.updateFromRms(0);
   $("progressBar").style.width = "0%";
   if (timeline) {
