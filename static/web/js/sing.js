@@ -79,6 +79,9 @@ let playing = false;
 let jawSmoothed = 0;
 let danceLevel = 0;   // slow-moving overall music energy (sway amplitude)
 let danceBeat = 0;    // punchy per-beat energy (bob + wing pumps)
+let voxLevel = 0;     // sustained vocal presence (0..1): high while singing
+let yawTarget = 0;    // organic head-turn target in [-1,1], wanders randomly
+let yawPos = 0;       // smoothed actual head turn -> avoids metronome left/right
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 let motionConfig = null;
@@ -98,19 +101,30 @@ const scheduler = new MotionScheduler({
   behavior,
   transport: null,
   speakingContextProvider: () => speakingCtx.snapshot(performance.now() / 1000),
-  // While a song is playing we replace the body motion with an explicit
-  // dance: continuous sway/bob LFOs scaled by overall music energy, plus
-  // beat-synced wing pumps. The jaw still mouths the isolated vocals.
+  // While a song is playing we replace the body motion with a dance.
+  // Two ideas keep it from looking like a metronome:
+  //   - Head YAW is an organic random wander (yawPos), not a sine.
+  //   - When he's actually singing words (voxLevel high) the body calms
+  //     and faces forward (danceFactor shrinks), then opens back up to
+  //     dance during instrumental breaks. The jaw carries the vocals.
   onFrame: (frame) => {
     if (!playing) return;
     const now = performance.now() / 1000;
     // Baseline groove (0.4) so he's never frozen, scaling up with energy.
     const amp = 0.4 + 0.6 * Math.min(1, danceLevel * 1.6);
-    const sway = 0.28 * amp * Math.sin(now * TAU * 0.6);            // head turn
-    const bob = 0.16 * amp * Math.sin(now * TAU * 1.3) + 0.22 * danceBeat; // head nod, punches on beats
-    const flap = Math.min(1, 0.25 + 0.9 * danceBeat) * (0.5 + 0.5 * Math.sin(now * TAU * 2.0));
+    // 1.0 during instrumental, ~0.2 while sustaining a vocal line.
+    const danceFactor = 1 - 0.8 * voxLevel;
+    const sway = 0.30 * amp * danceFactor * yawPos;
+    // Bob is mostly beat-driven (musical), plus a tiny groove sine; both
+    // back off while singing so the head stays forward on long words.
+    const beatBob = 0.20 * danceBeat * danceFactor;
+    const grooveBob = 0.05 * amp * danceFactor * Math.sin(now * TAU * 1.1);
+    // Wings keep flapping while singing but harder during instrumentals.
+    const flap = Math.min(1, 0.2 + 0.9 * danceBeat)
+      * (0.45 + 0.55 * Math.sin(now * TAU * 2.0))
+      * (0.55 + 0.45 * danceFactor);
     frame.head_lr = clamp01(0.5 + sway);
-    frame.head_ud = clamp01(0.5 - bob);
+    frame.head_ud = clamp01(0.5 - beatBob - grooveBob);
     frame.wing = clamp01(flap);
     frame.jaw = clamp01(jawSmoothed);
   },
@@ -565,6 +579,9 @@ function startPlayback() {
   jawSmoothed = 0;
   danceLevel = 0;
   danceBeat = 0;
+  voxLevel = 0;
+  yawTarget = 0;
+  yawPos = 0;
   behavior.setState("speaking");
   playing = true;
   $("playBtn").textContent = "Stop";
@@ -591,6 +608,16 @@ function driveMotion() {
   danceBeat = Math.max(beat, danceBeat * 0.82);  // fast attack, punchy decay
   danceLevel += 0.05 * (beat - danceLevel);      // slow overall energy
 
+  // Sustained vocal presence: rises while a vocal line holds (so long
+  // words settle the head forward), decays during instrumental gaps.
+  const voxInstant = Math.min(1, vocalV / TARGET_PEAK);
+  voxLevel += (voxInstant > voxLevel ? 0.10 : 0.04) * (voxInstant - voxLevel);
+
+  // Organic head-turn: re-pick a random target occasionally and ease
+  // toward it, so the yaw wanders naturally instead of ticking L-R-L-R.
+  if (Math.random() < 0.012) yawTarget = Math.random() * 2 - 1;
+  yawPos += 0.045 * (yawTarget - yawPos);
+
   // Jaw mouths the isolated vocals. Same attack/release as the jaw
   // envelope follower, with the live jaw-gain slider as the multiplier.
   const cal = envelope.calibration;
@@ -613,6 +640,9 @@ function stopPlayback() {
   jawSmoothed = 0;
   danceLevel = 0;
   danceBeat = 0;
+  voxLevel = 0;
+  yawPos = 0;
+  yawTarget = 0;
   speakingCtx.updateFromRms(0);
   $("progressBar").style.width = "0%";
   if (timeline) {
