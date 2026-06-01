@@ -47,9 +47,10 @@ const LOOK_AHEAD_S = 0.10;
 // LiveSpeakingContext), so ~0.12 here lands near a full-but-not-pinned
 // jaw swing and keeps headroom for emphasis.
 const TARGET_PEAK = 0.12;
-// Below this (post-normalization) the jaw fully closes — silences the
-// jaw during intros / instrumental breaks.
-const GATE_FLOOR = 0.012;
+// Peak-relative gate (fraction of the song's loud-peak) below which the
+// jaw fully closes — silences the mouth during intros / instrumental
+// breaks before the adaptive compression lifts everything above it.
+const GATE_FLOOR_N = 0.10;
 
 // ---- UI primitives ----
 
@@ -489,9 +490,10 @@ async function precomputeVocalEnvelope(audioBuf) {
   for (let i = 1; i < nFrames; i++) raw[i] = 0.6 * raw[i] + 0.4 * raw[i - 1];
   for (let i = 1; i < nFrames; i++) musicRaw[i] = 0.5 * musicRaw[i] + 0.5 * musicRaw[i - 1];
 
-  // Jaw envelope: gate the quiet bits (intros / instrumental breaks)
-  // fully closed so the mouth doesn't flap when no one is singing.
-  const vocalEnv = normalizeEnvelope(raw, GATE_FLOOR);
+  // Jaw envelope: gate the quiet bits, then adaptively compress so a
+  // song whose syllables are mostly small still drives pronounced mouth
+  // movement (the peak stays capped, the average gets pulled up).
+  const vocalEnv = compressVocalEnvelope(raw, GATE_FLOOR_N);
   // Music envelope: only a tiny gate so the body keeps dancing through
   // purely instrumental sections.
   const musicEnv = normalizeEnvelope(musicRaw, 0.006);
@@ -510,6 +512,45 @@ function normalizeEnvelope(arr, gate) {
     let v = arr[i] * scale;
     if (v < gate) v = 0;
     out[i] = v;
+  }
+  return out;
+}
+
+// Peak-normalize + gate, then adaptive dynamic-range compression: if the
+// TYPICAL (median) voiced syllable is small, raise the whole average with
+// a gamma<1 curve while leaving the loud peaks pinned at the cap. Songs
+// that are already dynamic (healthy median) are left alone.
+function compressVocalEnvelope(arr, gate) {
+  const n = arr.length;
+  const sorted = Float32Array.from(arr).sort();
+  const p95 = sorted[Math.min(n - 1, Math.floor(n * 0.95))] || 1e-6;
+
+  const norm = new Float32Array(n);
+  const voiced = [];
+  for (let i = 0; i < n; i++) {
+    let v = p95 > 1e-6 ? arr[i] / p95 : 0;
+    if (v > 1) v = 1;
+    if (v < gate) v = 0;
+    norm[i] = v;
+    if (v > 0) voiced.push(v);
+  }
+
+  // Pick a gamma that maps the current median voiced level up toward
+  // TARGET_MEDIAN. gamma<1 lifts small/mid values; gamma=1 is a no-op.
+  let gamma = 1;
+  if (voiced.length > 8) {
+    voiced.sort((a, b) => a - b);
+    const median = voiced[Math.floor(voiced.length / 2)] || 0;
+    const TARGET_MEDIAN = 0.5;
+    if (median > 0.02 && median < TARGET_MEDIAN) {
+      gamma = Math.log(TARGET_MEDIAN) / Math.log(median);
+      gamma = Math.max(0.4, Math.min(1, gamma)); // bound how aggressive it gets
+    }
+  }
+
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = norm[i] > 0 ? Math.pow(norm[i], gamma) * TARGET_PEAK : 0;
   }
   return out;
 }
