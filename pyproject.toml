@@ -3,3 +3,12 @@ name = "talking-maxwell"
 version = "0.0.0"
 description = "Maxwell hosted web mode + Relic prop control"
 requires-python = ">=3.11"
+# Vercel reads this instead of api/requirements.txt when pyproject.toml exists.
+# Keep in sync with api/requirements.txt — do not pull in local-operator deps
+# (numpy, pyserial, sounddevice, openai, …).
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "python-dotenv>=1.0,<2",
+  "PyYAML>=6.0,<7",
+]

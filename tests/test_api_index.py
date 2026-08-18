@@ -497,3 +497,6 @@ def test_api_requirements_are_minimal():
         assert banned not in pkgs, f"{banned} shouldn't be in api/requirements.txt"
     for needed in ("fastapi", "httpx"):
         assert needed in pkgs
+    pyproject = (root / "pyproject.toml").read_text().lower()
+    for needed in ("fastapi", "httpx"):
+        assert needed in pyproject
