@@ -3,9 +3,3 @@ name = "talking-maxwell"
 version = "0.0.0"
 description = "Maxwell hosted web mode + Relic prop control"
 requires-python = ">=3.11"
-
-# Vercel FastAPI: treat api/index.py:app as the whole site.
-# Do NOT catch-all rewrite to /api — CLI 58+ forwards the rewritten
-# destination as the path FastAPI sees, which 404s every page.
-[tool.vercel]
-entrypoint = "api.index:app"
