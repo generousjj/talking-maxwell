@@ -132,7 +132,7 @@ Open `http://127.0.0.1:8080/login`, sign in, click **Connect Maxwell**, then **S
 
 ### Deploying on Vercel (GitHub → auto-deploy → custom domain)
 
-Repo ships a `vercel.json` and a FastAPI entrypoint at `api/index.py`, so Vercel's Python runtime runs the same hosted app with **zero extra setup**. The whole deploy is: import repo, set 3 env vars, attach your domain.
+Repo ships a `vercel.json` / `pyproject.toml` FastAPI entrypoint at `api/index.py`, so Vercel's Python runtime runs the same hosted app with **zero extra setup**. The whole deploy is: import repo, set 3 env vars, attach your domain. Do not add a catch-all rewrite to `/api` — Vercel CLI 58+ would then serve every URL as path `/api` and FastAPI returns `{"detail":"Not Found"}`.
 
 1. **Push this repo to GitHub** (already done at `github.com/generousjj/talking-maxwell`).
 2. [vercel.com/new](https://vercel.com/new) → **Import Git Repository** → pick `talking-maxwell`.

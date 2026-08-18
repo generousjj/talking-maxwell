@@ -8,10 +8,10 @@ cookies, rate limiting, and Origin checks are byte-for-byte identical
 across deploy targets.
 
 Routing:
-    ``vercel.json`` rewrites every URL to this function (``/api``),
-    and FastAPI does the actual routing. A small per-path public/
-    protected split is enforced in the middleware exactly the way
-    the aiohttp version does it.
+    Vercel FastAPI serves this ``app`` as the whole site. Page paths
+    (``/``, ``/login``, ``/relic``, …) must reach FastAPI unchanged.
+    Do not catch-all rewrite to ``/api`` — CLI 58+ uses the rewrite
+    destination as the request path, which 404s every page.
 
 What is NOT here:
     Hardware. Same as the aiohttp server — all Web Serial + motion

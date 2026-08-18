@@ -7,8 +7,5 @@
       "maxDuration": 30,
       "includeFiles": "{static/**,config.yaml}"
     }
-  },
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api" }
-  ]
+  }
 }
