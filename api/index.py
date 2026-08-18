@@ -319,6 +319,16 @@ class RestoreVercelPathMiddleware:
                 scope["raw_path"] = path.encode("utf-8")
                 scope["query_string"] = urlencode(kept).encode("latin-1")
                 scope["root_path"] = ""
+            else:
+                headers = {
+                    key.decode("latin-1").lower(): val.decode("latin-1")
+                    for key, val in (scope.get("headers") or [])
+                }
+                header_path = headers.get("x-vercel-original-path")
+                if header_path and header_path.startswith("/"):
+                    scope["path"] = header_path
+                    scope["raw_path"] = header_path.encode("utf-8")
+                    scope["root_path"] = ""
         await self.app(scope, receive, send)
 
 

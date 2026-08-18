@@ -11,7 +11,21 @@
     { "handle": "filesystem" },
     {
       "src": "/(.*)",
-      "dest": "/api?__path=/$1"
+      "dest": "/api",
+      "transforms": [
+        {
+          "type": "request.query",
+          "op": "set",
+          "target": { "key": "__path" },
+          "args": "/$1"
+        },
+        {
+          "type": "request.headers",
+          "op": "set",
+          "target": { "key": "x-vercel-original-path" },
+          "args": "/$1"
+        }
+      ]
     }
   ]
 }
