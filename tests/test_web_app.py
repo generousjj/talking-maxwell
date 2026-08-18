@@ -455,6 +455,24 @@ async def test_sing_page_requires_auth_and_renders():
         await close()
 
 
+@_async
+async def test_relic_page_requires_auth_and_renders():
+    client, close = await _build_song_client_factory(SPOTIFY_ID, SPOTIFY_SECRET)()
+    try:
+        resp = await client.get("/relic", allow_redirects=False)
+        assert resp.status == 302
+        assert resp.headers["Location"] == "/login"
+        await client.post("/api/auth/login", json={"password": PASSWORD})
+        page = await client.get("/relic")
+        assert page.status == 200
+        body = await page.text()
+        assert "/static/web/js/relic.js" in body
+        assert "BTF-LIGHTING" in body
+        assert "The Relic" in body
+    finally:
+        await close()
+
+
 def test_frontend_assets_present():
     root = Path(__file__).resolve().parent.parent / "static" / "web"
     for name in (
@@ -462,10 +480,13 @@ def test_frontend_assets_present():
         "index.html",
         "admits.html",
         "sing.html",
+        "relic.html",
         "css/app.css",
+        "css/relic.css",
         "js/app.js",
         "js/admits.js",
         "js/sing.js",
+        "js/relic.js",
         "js/auth.js",
         "js/serial.js",
         "js/bottango.js",

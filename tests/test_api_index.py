@@ -469,6 +469,19 @@ def test_sing_page_requires_auth_and_renders(client):
     assert "/static/web/js/sing.js" in page.text
 
 
+def test_relic_page_requires_auth_and_renders(client):
+    c, _ = client
+    resp = c.get("/relic", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/login"
+    c.post("/api/auth/login", json={"password": PASSWORD})
+    page = c.get("/relic")
+    assert page.status_code == 200
+    assert "/static/web/js/relic.js" in page.text
+    assert "BTF-LIGHTING" in page.text
+    assert "The Relic" in page.text
+
+
 def test_api_requirements_are_minimal():
     root = Path(__file__).resolve().parent.parent
     raw = (root / "api" / "requirements.txt").read_text().lower()

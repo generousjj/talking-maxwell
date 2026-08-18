@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relic — Artifact Lighting</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/web/css/relic.css">
+</head>
+<body class="relic-body">
+  <div class="relic-bg" aria-hidden="true"></div>
+
+  <header class="relic-header">
+    <div class="relic-brand">
+      <div class="orb-sigil" aria-hidden="true"><span class="orb-core"></span></div>
+      <div>
+        <p class="relic-eyebrow">Chamber control</p>
+        <h1 class="relic-title">The Relic</h1>
+      </div>
+    </div>
+    <div class="relic-header-actions">
+      <span id="connPill" class="status-chip status-off">Unlinked</span>
+      <button id="logoutBtn" class="btn-text" type="button">Leave chamber</button>
+    </div>
+  </header>
+
+  <main class="relic-layout">
+    <!-- LEFT: awaken the stone -->
+    <section class="stone-card card-control">
+      <header class="card-header">
+        <span class="card-glyph" aria-hidden="true">◉</span>
+        <div>
+          <h2>Awaken</h2>
+          <p>Link the Sparkle Motion on this laptop. Chrome or Edge only.</p>
+        </div>
+      </header>
+
+      <div class="connect-row">
+        <button id="connectBtn" class="btn-primary" type="button">Link stone</button>
+        <button id="disconnectBtn" class="btn-secondary" type="button" disabled>Break link</button>
+      </div>
+      <p id="serialWarn" class="alert alert-warn hidden">This browser cannot speak to USB serial. Open in Chrome or Edge.</p>
+
+      <div class="action-stack">
+        <button id="triggerBtn" class="btn-awaken" type="button" disabled>
+          <span class="btn-label">Place the sigil</span>
+          <span class="btn-sub">Trigger full sequence · key <kbd>t</kbd></span>
+        </button>
+        <div class="action-pair">
+          <button id="resetBtn" class="btn-secondary" type="button" disabled>Extinguish <kbd>r</kbd></button>
+          <button id="calBtn" class="btn-secondary" type="button" disabled>Calibrate field <kbd>c</kbd></button>
+          <button id="printBtn" class="btn-secondary" type="button" disabled>Read sensor <kbd>p</kbd></button>
+        </div>
+      </div>
+
+      <div class="sensor-panel">
+        <header class="sensor-head">
+          <h3>Magnetic field</h3>
+          <span id="magState" class="state-badge state-dormant">DORMANT</span>
+        </header>
+        <div class="delta-hero">
+          <span class="delta-label">Field shift Δ</span>
+          <span id="magD" class="delta-value">—</span>
+          <div class="delta-track"><div id="deltaFill" class="delta-fill"></div></div>
+        </div>
+        <dl class="sensor-grid">
+          <div><dt>X</dt><dd id="magX">—</dd></div>
+          <div><dt>Y</dt><dd id="magY">—</dd></div>
+          <div><dt>Z</dt><dd id="magZ">—</dd></div>
+          <div><dt>Sigil near</dt><dd id="magPresent" class="sigil-no">No</dd></div>
+        </dl>
+        <p class="sensor-note">Hold the magnet to the hall sensor on the stone hand. Keep away during calibration.</p>
+      </div>
+
+      <div class="threshold-block">
+        <h3>Trigger thresholds</h3>
+        <p class="fine-print">Stored in this browser until you export to firmware.</p>
+        <div class="field-row">
+          <label><span>Awaken above (mT)</span><input type="number" id="triggerThresh" step="0.1" min="0"></label>
+          <label><span>Sleep below (mT)</span><input type="number" id="releaseThresh" step="0.1" min="0"></label>
+          <label><span>Pixels on strip</span><input type="number" id="totalLeds" min="1" max="500"></label>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: map the rock -->
+    <section class="stone-card card-map">
+      <header class="card-header card-header-spread">
+        <div>
+          <span class="card-glyph card-glyph-map" aria-hidden="true">◇</span>
+          <h2>Map the rock</h2>
+          <p>Assign LED indices to the orb, molten cracks, and crystal clusters.</p>
+        </div>
+        <div class="toolbar">
+          <button id="saveBtn" class="btn-secondary" type="button">Save here</button>
+          <button id="exportBtn" class="btn-gold" type="button">Export firmware</button>
+          <button id="resetCfgBtn" class="btn-text btn-danger" type="button">Reset map</button>
+        </div>
+      </header>
+
+      <aside class="lore-strip">
+        <strong>BTF-LIGHTING WS2812B ECO · 144/m</strong>
+        Pixel <em>0</em> sits at <strong>DIN</strong> where the wire meets the strip — follow the PCB arrow.
+        Cut marks appear every ~6.9&nbsp;mm but LEDs are <em>not numbered</em>; count from the controller or measure along the rock.
+      </aside>
+
+      <div id="rangeSections" class="range-deck"></div>
+    </section>
+
+    <!-- BOTTOM: scribe log -->
+    <section class="stone-card card-log">
+      <header class="card-header card-header-spread">
+        <div>
+          <span class="card-glyph card-glyph-log" aria-hidden="true">≡</span>
+          <h2>Scribe log</h2>
+          <p>Live words from the relic controller.</p>
+        </div>
+        <button id="clearLogBtn" class="btn-text" type="button">Clear</button>
+      </header>
+      <pre id="serialLog" class="scribe-log"></pre>
+    </section>
+  </main>
+
+  <footer class="relic-footer">
+    <span>Artifact prop · Sparkle Motion Mini · close Arduino Serial Monitor before linking</span>
+  </footer>
+
+  <dialog id="exportDialog" class="relic-dialog">
+    <form method="dialog" class="dialog-inner">
+      <header>
+        <h3>Inscribe into firmware</h3>
+        <p>Paste this block into <code>config.h</code>, then reflash the board.</p>
+      </header>
+      <textarea id="exportText" readonly spellcheck="false"></textarea>
+      <footer class="dialog-actions">
+        <button id="copyExportBtn" class="btn-gold" type="button">Copy to clipboard</button>
+        <button class="btn-secondary" type="submit">Close</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script type="module" src="/static/web/js/relic.js"></script>
+</body>
+</html>

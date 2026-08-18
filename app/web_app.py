@@ -205,6 +205,11 @@ async def handle_sing(request: web.Request) -> web.Response:
     return _send_static_file(request, "sing.html")
 
 
+async def handle_relic(request: web.Request) -> web.Response:
+    # Artifact prop lighting — Web Serial control panel.
+    return _send_static_file(request, "relic.html")
+
+
 async def handle_health(_request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
@@ -617,6 +622,7 @@ def build_app(
     app.router.add_get("/", handle_index)
     app.router.add_get("/admits", handle_admits)
     app.router.add_get("/sing", handle_sing)
+    app.router.add_get("/relic", handle_relic)
 
     app.router.add_post("/api/auth/login", handle_login)
     app.router.add_post("/api/auth/logout", handle_logout)

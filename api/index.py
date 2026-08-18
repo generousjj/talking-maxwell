@@ -391,6 +391,12 @@ async def sing_page(request: Request):
     return _serve_html("sing.html")
 
 
+@app.get("/relic", response_class=HTMLResponse)
+async def relic_page(request: Request):
+    # Artifact prop lighting control — Web Serial to Sparkle Motion Mini.
+    return _serve_html("relic.html")
+
+
 def _serve_html(name: str) -> Response:
     path = STATIC_WEB_ROOT / name
     if not path.is_file():
