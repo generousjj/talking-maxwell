@@ -132,7 +132,7 @@ Open `http://127.0.0.1:8080/login`, sign in, click **Connect Maxwell**, then **S
 
 ### Deploying on Vercel (GitHub → auto-deploy → custom domain)
 
-Repo ships a `vercel.json` FastAPI entrypoint at `api/index.py`. Vercel runs it as one function (`/index`) and a `request.path` transform forwards the real URL (`/login`, `/relic`, …) into FastAPI. Do not catch-all rewrite to `/api` — CLI 58+ would then serve every page as path `/api` (`{"detail":"Not Found"}`).
+Repo ships a `vercel.json` FastAPI entrypoint at `api/index.py`. Browser URLs are routed to that function at `/api`, and a `request.path` transform forwards the real path (`/login`, `/relic`, …) into FastAPI.
 
 1. **Push this repo to GitHub** (already done at `github.com/generousjj/talking-maxwell`).
 2. [vercel.com/new](https://vercel.com/new) → **Import Git Repository** → pick `talking-maxwell`.

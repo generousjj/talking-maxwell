@@ -8,11 +8,9 @@ cookies, rate limiting, and Origin checks are byte-for-byte identical
 across deploy targets.
 
 Routing:
-    Vercel FastAPI compiles this module into a single function named
-    ``/index``. A ``request.path`` transform in ``vercel.json`` restores
-    the browser path (``/login``, ``/relic``, …) before FastAPI routes.
-    Do not rewrite every URL to ``/api`` — that makes FastAPI see only
-    ``/api`` and return ``{"detail":"Not Found"}``.
+    Vercel FastAPI compiles this module into a function at ``/api``.
+    ``vercel.json`` routes every browser URL there and a ``request.path``
+    transform restores ``/login``, ``/relic``, etc. before FastAPI routes.
 
 What is NOT here:
     Hardware. Same as the aiohttp server — all Web Serial + motion
@@ -288,6 +286,42 @@ def _client_ip(request: Request) -> str:
     return (request.client.host if request.client else "unknown")
 
 
+class RestoreVercelPathMiddleware:
+    """Restore the browser path before FastAPI routes the request.
+
+    ``api/index.py`` is invoked at ``/api``. Vercel may also leak
+    ``/index`` as the ASGI path. Prefer ``x-forwarded-uri`` / a
+    ``request.path`` transform so ``/login`` and ``/relic`` still match.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            scope = dict(scope)
+            headers = {
+                key.decode("latin-1").lower(): val.decode("latin-1")
+                for key, val in (scope.get("headers") or [])
+            }
+            forwarded = headers.get("x-forwarded-uri") or headers.get(
+                "x-vercel-original-path"
+            )
+            path = scope.get("path") or "/"
+            if forwarded:
+                candidate = forwarded.split("?")[0]
+                if candidate.startswith("/"):
+                    path = candidate
+            elif path in ("/api", "/api/", "/index", "/index/"):
+                path = "/"
+            if not path.startswith("/"):
+                path = "/" + path
+            scope["path"] = path
+            scope["raw_path"] = path.encode("utf-8")
+            scope["root_path"] = ""
+        await self.app(scope, receive, send)
+
+
 class AuthAndOriginMiddleware(BaseHTTPMiddleware):
     """Session gate + Origin check, mirroring the aiohttp middleware.
 
@@ -334,6 +368,7 @@ class AuthAndOriginMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(AuthAndOriginMiddleware)
+app.add_middleware(RestoreVercelPathMiddleware)
 
 
 # --------------------------------------------------------------------
