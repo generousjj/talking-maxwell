@@ -9,8 +9,9 @@ across deploy targets.
 
 Routing:
     Vercel FastAPI compiles this module into a function at ``/api``.
-    ``vercel.json`` routes every browser URL there and a ``request.path``
-    transform restores ``/login``, ``/relic``, etc. before FastAPI routes.
+    ``vercel.json`` routes every browser URL to this function at ``/api``
+    and passes the original path as ``?__path=/login`` (etc). Middleware
+    restores that path before FastAPI routes.
 
 What is NOT here:
     Hardware. Same as the aiohttp server — all Web Serial + motion
@@ -27,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -286,6 +287,41 @@ def _client_ip(request: Request) -> str:
     return (request.client.host if request.client else "unknown")
 
 
+class RestoreVercelPathMiddleware:
+    """Vercel invokes api/index.py at /api and overwrites the ASGI path.
+
+    ``vercel.json`` puts the original browser path in ``?__path=``.
+    Apply that before FastAPI routing.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            scope = dict(scope)
+            raw_qs = (scope.get("query_string") or b"").decode("latin-1")
+            pairs = parse_qsl(raw_qs, keep_blank_values=True)
+            injected = None
+            kept = []
+            for key, val in pairs:
+                if key == "__path" and injected is None:
+                    injected = val
+                else:
+                    kept.append((key, val))
+            if injected is not None:
+                path = unquote(injected)
+                if not path.startswith("/"):
+                    path = "/" + path
+                if path == "":
+                    path = "/"
+                scope["path"] = path
+                scope["raw_path"] = path.encode("utf-8")
+                scope["query_string"] = urlencode(kept).encode("latin-1")
+                scope["root_path"] = ""
+        await self.app(scope, receive, send)
+
+
 class AuthAndOriginMiddleware(BaseHTTPMiddleware):
     """Session gate + Origin check, mirroring the aiohttp middleware.
 
@@ -300,8 +336,6 @@ class AuthAndOriginMiddleware(BaseHTTPMiddleware):
         public = (
             path == "/login"
             or path == "/healthz"
-            or path == "/api"
-            or path == "/index"
             or path == "/api/auth/login"
             or path == "/api/auth/me"
             or path.startswith("/static/")
@@ -334,6 +368,7 @@ class AuthAndOriginMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(AuthAndOriginMiddleware)
+app.add_middleware(RestoreVercelPathMiddleware)
 
 
 # --------------------------------------------------------------------
@@ -365,25 +400,6 @@ else:
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
-
-
-@app.get("/api", include_in_schema=False)
-@app.get("/index", include_in_schema=False)
-async def vercel_path_probe(request: Request) -> JSONResponse:
-    # Temporary: if Vercel still forwards every URL as /api or /index,
-    # this is what the browser will receive. Remove once routing is stable.
-    x_headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower().startswith("x-") or k.lower() in {"host", "forwarded", "url"}
-    }
-    return JSONResponse({
-        "ok": True,
-        "path": request.url.path,
-        "scope_path": request.scope.get("path"),
-        "root_path": request.scope.get("root_path"),
-        "url": str(request.url),
-        "headers": x_headers,
-    })
 
 
 @app.get("/login", response_class=HTMLResponse)

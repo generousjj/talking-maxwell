@@ -88,6 +88,18 @@ def test_health_is_public(client):
     assert resp.json()["ok"] is True
 
 
+def test_vercel_path_query_serves_login(client):
+    c, _ = client
+    resp = c.get("/api", params={"__path": "/login"}, follow_redirects=False)
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "Maxwell" in resp.text
+    c, _ = client
+    resp = c.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
 def test_index_redirects_when_unauthenticated(client):
     c, _ = client
     resp = c.get("/", follow_redirects=False)

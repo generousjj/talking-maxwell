@@ -11,14 +11,7 @@
     { "handle": "filesystem" },
     {
       "src": "/(.*)",
-      "dest": "/api",
-      "transforms": [
-        {
-          "type": "request.path",
-          "op": "set",
-          "args": "/$1"
-        }
-      ]
+      "dest": "/api?__path=/$1"
     }
   ]
 }
