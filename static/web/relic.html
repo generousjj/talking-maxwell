@@ -76,10 +76,19 @@
 
       <div class="threshold-block">
         <h3>Trigger thresholds</h3>
-        <p class="fine-print">Stored in this browser until you export to firmware.</p>
+        <p class="fine-print">Changes push to the stone as soon as it is linked. Also kept in this browser.</p>
         <div class="field-row">
           <label><span>Awaken above (mT)</span><input type="number" id="triggerThresh" step="0.1" min="0"></label>
           <label><span>Sleep below (mT)</span><input type="number" id="releaseThresh" step="0.1" min="0"></label>
+          <label>
+            <span>Brightness</span>
+            <div id="briPills" class="bri-pills" role="group" aria-label="Brightness percent">
+              <button type="button" class="bri-pill" data-pct="2">2%</button>
+              <button type="button" class="bri-pill" data-pct="5">5%</button>
+              <button type="button" class="bri-pill" data-pct="10">10%</button>
+              <button type="button" class="bri-pill" data-pct="15">15%</button>
+            </div>
+          </label>
           <label><span>Pixels on strip</span><input type="number" id="totalLeds" min="1" max="500"></label>
         </div>
       </div>
@@ -95,7 +104,8 @@
         </div>
         <div class="toolbar">
           <button id="saveBtn" class="btn-secondary" type="button">Save here</button>
-          <button id="exportBtn" class="btn-gold" type="button">Export firmware</button>
+          <button id="pushBtn" class="btn-gold" type="button">Push to stone</button>
+          <button id="exportBtn" class="btn-secondary" type="button">Export firmware</button>
           <button id="resetCfgBtn" class="btn-text btn-danger" type="button">Reset map</button>
         </div>
       </header>

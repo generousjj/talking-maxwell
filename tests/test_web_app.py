@@ -469,6 +469,8 @@ async def test_relic_page_requires_auth_and_renders():
         assert "/static/web/js/relic.js" in body
         assert "BTF-LIGHTING" in body
         assert "The Relic" in body
+        assert "2%" in body
+        assert "15%" in body
     finally:
         await close()
 

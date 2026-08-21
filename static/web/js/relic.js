@@ -1,7 +1,7 @@
 /**
  * Relic — browser control panel for the artifact prop (Sparkle Motion Mini).
  *
- * Phase 1: Web Serial + localStorage range editor + config.h export.
+ * Phase 1: Web Serial + live range/threshold/brightness push + localStorage + config.h export.
  * Hardware must be plugged into the same laptop running Chrome/Edge.
  */
 
@@ -12,6 +12,7 @@ const DEFAULT_CONFIG = {
   totalLeds: 144,
   triggerThreshold: 2.5,
   releaseThreshold: 1.2,
+  brightnessPct: 5,
   orb: [{ start: 0, end: 4 }],
   magma: [
     { start: 5, end: 10 },
@@ -49,6 +50,7 @@ const els = {
   rangeSections: $("rangeSections"),
   serialLog: $("serialLog"),
   saveBtn: $("saveBtn"),
+  pushBtn: $("pushBtn"),
   exportBtn: $("exportBtn"),
   resetCfgBtn: $("resetCfgBtn"),
   clearLogBtn: $("clearLogBtn"),
@@ -63,17 +65,50 @@ let port = null;
 let reader = null;
 let writer = null;
 let readLoopAbort = null;
+let livePushTimer = null;
+let lastPushedJson = "";
 
 function loadConfig() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...DEFAULT_CONFIG, ...parsed };
+    }
   } catch (_) { /* ignore */ }
   return structuredClone(DEFAULT_CONFIG);
 }
 
 function persistConfig() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+}
+
+function normalizeBrightness(pct) {
+  const n = Number(pct);
+  return n === 2 || n === 5 || n === 10 || n === 15 ? n : 5;
+}
+
+function paintBrightnessPills() {
+  document.querySelectorAll(".bri-pill").forEach((btn) => {
+    btn.setAttribute("aria-pressed", String(Number(btn.dataset.pct) === config.brightnessPct));
+  });
+}
+
+function rangesPayload(ranges) {
+  return (ranges || []).map((r) => `${Number(r.start)},${Number(r.end)}`).join(";");
+}
+
+function liveSnapshot() {
+  return {
+    triggerThreshold: config.triggerThreshold,
+    releaseThreshold: config.releaseThreshold,
+    brightnessPct: config.brightnessPct,
+    orb: config.orb,
+    magma: config.magma,
+    crystal1: config.crystal1,
+    crystal2: config.crystal2,
+    hidden: config.hidden,
+  };
 }
 
 function log(line, { err = false } = {}) {
@@ -170,6 +205,43 @@ async function sendCmd(ch) {
   log(`→ sent '${ch}'`);
 }
 
+async function pushLiveToBoard({ silent = false, force = false } = {}) {
+  syncConfigFromForm();
+  persistConfig();
+  const snap = JSON.stringify(liveSnapshot());
+  if (!writer) {
+    if (!silent) log("Saved in this browser — link the stone to apply live");
+    return;
+  }
+  if (!force && snap === lastPushedJson) {
+    if (!silent) log("Stone already has this map");
+    return;
+  }
+  const lines = [
+    `=T${config.triggerThreshold}`,
+    `=R${config.releaseThreshold}`,
+    `=B${config.brightnessPct}`,
+    `=O${rangesPayload(config.orb)}`,
+    `=M${rangesPayload(config.magma)}`,
+    `=C${rangesPayload(config.crystal1)}`,
+    `=D${rangesPayload(config.crystal2)}`,
+    `=H${rangesPayload(config.hidden)}`,
+  ];
+  const enc = new TextEncoder();
+  await writer.write(enc.encode(`${lines.join("\n")}\n`));
+  lastPushedJson = snap;
+  if (!silent) {
+    log(`Pushed live  B=${config.brightnessPct}%  T=${config.triggerThreshold}  R=${config.releaseThreshold}`);
+  }
+}
+
+function scheduleLivePush() {
+  clearTimeout(livePushTimer);
+  livePushTimer = setTimeout(() => {
+    pushLiveToBoard({ silent: true }).catch((e) => log(e.message, { err: true }));
+  }, 180);
+}
+
 async function connect() {
   if (!("serial" in navigator)) {
     throw new Error("Web Serial not supported");
@@ -181,6 +253,8 @@ async function connect() {
   setConnected(true);
   log("Linked to the relic at 115200 baud");
   startReadLoop();
+  lastPushedJson = "";
+  await pushLiveToBoard({ force: true });
 }
 
 async function disconnect() {
@@ -299,13 +373,16 @@ function syncConfigFromForm() {
   config.totalLeds = Number(els.totalLeds.value) || 144;
   config.triggerThreshold = Number(els.triggerThresh.value) || 2.5;
   config.releaseThreshold = Number(els.releaseThresh.value) || 1.2;
+  config.brightnessPct = normalizeBrightness(config.brightnessPct);
   Object.assign(config, collectRangesFromDom());
 }
 
 function renderForm() {
+  config.brightnessPct = normalizeBrightness(config.brightnessPct);
   els.totalLeds.value = String(config.totalLeds);
   els.triggerThresh.value = String(config.triggerThreshold);
   els.releaseThresh.value = String(config.releaseThreshold);
+  paintBrightnessPills();
 
   els.rangeSections.replaceChildren(
     renderRangeSection(
@@ -341,6 +418,7 @@ function renderForm() {
       const rows = btn.previousElementSibling;
       const showDir = key === "magma";
       rows.appendChild(makeRangeRow(key, rows.children.length, { start: 0, end: 0 }, showDir));
+      scheduleLivePush();
     });
   });
 }
@@ -381,6 +459,7 @@ static const uint8_t HIDDEN_RANGE_COUNT =
 
 static const float MAGNET_TRIGGER_THRESHOLD = ${c.triggerThreshold}f;
 static const float MAGNET_RELEASE_THRESHOLD = ${c.releaseThreshold}f;
+// Live brightness: ${c.brightnessPct}% (2 / 5 / 10 / 15)
 `;
 }
 
@@ -438,6 +517,29 @@ function init() {
     syncConfigFromForm();
     persistConfig();
     log("Map saved in this browser");
+    pushLiveToBoard({ force: true }).catch((e) => log(e.message, { err: true }));
+  });
+
+  if (els.pushBtn) {
+    els.pushBtn.addEventListener("click", () => {
+      pushLiveToBoard({ force: true }).catch((e) => log(e.message, { err: true }));
+    });
+  }
+
+  document.querySelectorAll(".bri-pill").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      config.brightnessPct = Number(btn.dataset.pct);
+      paintBrightnessPills();
+      pushLiveToBoard({ force: true }).catch((e) => log(e.message, { err: true }));
+    });
+  });
+
+  els.triggerThresh.addEventListener("input", scheduleLivePush);
+  els.releaseThresh.addEventListener("input", scheduleLivePush);
+  els.totalLeds.addEventListener("input", scheduleLivePush);
+  els.rangeSections.addEventListener("input", scheduleLivePush);
+  els.rangeSections.addEventListener("click", (e) => {
+    if (e.target.closest(".btn-icon")) scheduleLivePush();
   });
 
   els.exportBtn.addEventListener("click", () => {
@@ -456,6 +558,7 @@ function init() {
     persistConfig();
     renderForm();
     log("Default map restored");
+    pushLiveToBoard({ force: true }).catch((e) => log(e.message, { err: true }));
   });
 
   els.clearLogBtn.addEventListener("click", () => {

@@ -473,6 +473,32 @@ kbd {
   box-shadow: 0 0 0 2px rgba(201, 146, 42, 0.2);
 }
 
+.bri-pills {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.4rem;
+}
+.bri-pill {
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.45rem 0.2rem;
+  border-radius: 8px;
+  border: 1px solid var(--stone-edge);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--parchment-dim);
+  cursor: pointer;
+}
+.bri-pill:hover {
+  border-color: var(--ember);
+  color: var(--parchment);
+}
+.bri-pill[aria-pressed="true"] {
+  background: linear-gradient(180deg, var(--orb-mid), var(--ember));
+  color: #1a1208;
+  border-color: var(--orb-mid);
+}
+
 /* ---- Lore strip ---- */
 
 .lore-strip {

@@ -492,6 +492,8 @@ def test_relic_page_requires_auth_and_renders(client):
     assert "/static/web/js/relic.js" in page.text
     assert "BTF-LIGHTING" in page.text
     assert "The Relic" in page.text
+    assert "2%" in page.text
+    assert "15%" in page.text
 
 
 def test_api_requirements_are_minimal():
