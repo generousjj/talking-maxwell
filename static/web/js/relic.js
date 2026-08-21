@@ -71,6 +71,8 @@ let livePushTimer = null;
 let threshPushTimer = null;
 let lastPushedJson = "";
 let lastDelta = null;
+let lastMagmaPayload = "";
+let sawMagmaRestart = false;
 
 function loadConfig() {
   try {
@@ -160,6 +162,7 @@ function parseCfgLine(line) {
   const rel = line.match(/release=([-\d.]+)/i);
   if (trig) setOnStone(els.boardTrig, trig[1]);
   if (rel) setOnStone(els.boardRel, rel[1]);
+  if (/fire line restarted/i.test(line)) sawMagmaRestart = true;
 }
 
 function updateDeltaBar(deltaStr) {
@@ -263,10 +266,12 @@ function scheduleThresholdPush() {
   }, 80);
 }
 
-async function pushLiveToBoard({ silent = false, force = false } = {}) {
+async function pushLiveToBoard({ silent = false, force = false, restartMagma = true } = {}) {
   syncConfigFromForm();
   persistConfig();
   const snap = JSON.stringify(liveSnapshot());
+  const magmaNow = rangesPayload(config.magma);
+  const magmaChanged = magmaNow !== lastMagmaPayload;
   if (!writer) {
     if (!silent) log("Saved in this browser — link the stone to apply live");
     return;
@@ -280,15 +285,29 @@ async function pushLiveToBoard({ silent = false, force = false } = {}) {
     `=R${config.releaseThreshold}`,
     `=B${config.brightnessPct}`,
     `=O${rangesPayload(config.orb)}`,
-    `=M${rangesPayload(config.magma)}`,
+    `=M${magmaNow}`,
     `=C${rangesPayload(config.crystal1)}`,
     `=D${rangesPayload(config.crystal2)}`,
     `=H${rangesPayload(config.hidden)}`,
   ];
   await writeSerial(`${lines.join("\r\n")}\r\n`);
   lastPushedJson = snap;
+  lastMagmaPayload = magmaNow;
   if (!silent) {
-    log(`Pushed live  B=${config.brightnessPct}%  T=${config.triggerThreshold}  R=${config.releaseThreshold}`);
+    log(`Pushed live  B=${config.brightnessPct}%  magma ${magmaNow || "(none)"}`);
+  }
+
+  if (restartMagma && magmaChanged) {
+    sawMagmaRestart = false;
+    await new Promise((r) => setTimeout(r, 150));
+    if (sawMagmaRestart) {
+      log("Fire line restarted — watch the crack run");
+    } else {
+      log("Retriggering so the new crack can animate…");
+      await writeSerial("r");
+      await new Promise((r) => setTimeout(r, 2300));
+      await writeSerial("t");
+    }
   }
 }
 
@@ -296,7 +315,7 @@ function scheduleRangePush() {
   clearTimeout(livePushTimer);
   livePushTimer = setTimeout(() => {
     pushLiveToBoard({ force: true }).catch((e) => log(e.message, { err: true }));
-  }, 150);
+  }, 400);
 }
 
 async function connect() {
@@ -311,7 +330,8 @@ async function connect() {
   log("Linked to the relic at 115200 baud");
   startReadLoop();
   lastPushedJson = "";
-  await pushLiveToBoard({ force: true });
+  lastMagmaPayload = "";
+  await pushLiveToBoard({ force: true, restartMagma: false });
 }
 
 async function disconnect() {
@@ -443,8 +463,10 @@ function collectRangesFromDom() {
     document.querySelectorAll(`.range-row[data-key="${key}"]`).forEach((row) => {
       const inputs = row.querySelectorAll('input[type="number"]');
       if (inputs.length < 2) return;
+      if (inputs[0].value === "" && inputs[1].value === "") return;
       const start = clampIndex(inputs[0].value);
       const end = clampIndex(inputs[1].value);
+      if (out[key].length > 0 && start === 0 && end === 0) return;
       out[key].push({ start, end });
     });
   }
@@ -499,7 +521,7 @@ function renderForm() {
       const key = btn.dataset.key;
       const rows = btn.previousElementSibling;
       const showDir = key === "magma";
-      rows.appendChild(makeRangeRow(key, rows.children.length, { start: 0, end: 0 }, showDir));
+      rows.appendChild(makeRangeRow(key, rows.children.length, { start: "", end: "" }, showDir));
       scheduleRangePush();
     });
   });
