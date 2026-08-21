@@ -98,8 +98,19 @@ function paintBrightnessPills() {
   });
 }
 
+function lastPixelIndex() {
+  const n = Number(els.totalLeds?.value) || config.totalLeds || 144;
+  return Math.max(0, Math.floor(n) - 1);
+}
+
+function clampIndex(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return 0;
+  return Math.min(Math.floor(v), lastPixelIndex());
+}
+
 function rangesPayload(ranges) {
-  return (ranges || []).map((r) => `${Number(r.start)},${Number(r.end)}`).join(";");
+  return (ranges || []).map((r) => `${clampIndex(r.start)},${clampIndex(r.end)}`).join(";");
 }
 
 function liveSnapshot() {
@@ -281,11 +292,11 @@ async function pushLiveToBoard({ silent = false, force = false } = {}) {
   }
 }
 
-function scheduleLivePush() {
+function scheduleRangePush() {
   clearTimeout(livePushTimer);
   livePushTimer = setTimeout(() => {
-    pushLiveToBoard({ silent: true }).catch((e) => log(e.message, { err: true }));
-  }, 180);
+    pushLiveToBoard({ force: true }).catch((e) => log(e.message, { err: true }));
+  }, 150);
 }
 
 async function connect() {
@@ -339,6 +350,27 @@ function renderRangeSection(key, title, tag, desc, extraClass, showDirection) {
   const ranges = config[key] || [];
   ranges.forEach((r, i) => rows.appendChild(makeRangeRow(key, i, r, showDirection)));
   if (!ranges.length) rows.appendChild(makeRangeRow(key, 0, { start: 0, end: 0 }, showDirection));
+
+  if (key === "magma") {
+    const full = document.createElement("button");
+    full.type = "button";
+    full.className = "btn-full-strip";
+    full.textContent = `Full-strip crack  0 → ${lastPixelIndex()}`;
+    full.title = "Replace molten segments with one crack down the whole strip, then trigger to watch it run";
+    full.addEventListener("click", () => {
+      const last = lastPixelIndex();
+      config.magma = [{ start: 0, end: last }];
+      persistConfig();
+      renderForm();
+      pushLiveToBoard({ force: true })
+        .then(() => {
+          log(`Molten crack is 0→${last} (pixel ${last} is last of ${last + 1}). Place the sigil (t) to run the fire line.`);
+        })
+        .catch((e) => log(e.message, { err: true }));
+    });
+    section.appendChild(full);
+  }
+
   return section;
 }
 
@@ -351,15 +383,21 @@ function makeRangeRow(key, index, range, showDirection) {
   const start = document.createElement("input");
   start.type = "number";
   start.min = "0";
+  start.max = String(Number(els.totalLeds.value) || 144);
+  start.step = "1";
+  start.inputMode = "numeric";
   start.value = String(range.start);
-  start.title = "Start index (inclusive, zero-based)";
+  start.title = "Start index (inclusive, zero-based). 0 is DIN.";
 
   const end = document.createElement("input");
   end.type = "number";
   end.min = "0";
+  end.max = String(Number(els.totalLeds.value) || 144);
+  end.step = "1";
+  end.inputMode = "numeric";
   end.value = String(range.end);
   end.title = showDirection
-    ? "End index — first→last sets magma propagation direction"
+    ? "End index — first→last is magma flow. 144 LEDs means last pixel is 143."
     : "End index (inclusive)";
 
   const dir = document.createElement("span");
@@ -405,11 +443,9 @@ function collectRangesFromDom() {
     document.querySelectorAll(`.range-row[data-key="${key}"]`).forEach((row) => {
       const inputs = row.querySelectorAll('input[type="number"]');
       if (inputs.length < 2) return;
-      const start = Number(inputs[0].value);
-      const end = Number(inputs[1].value);
-      if (Number.isFinite(start) && Number.isFinite(end)) {
-        out[key].push({ start, end });
-      }
+      const start = clampIndex(inputs[0].value);
+      const end = clampIndex(inputs[1].value);
+      out[key].push({ start, end });
     });
   }
   return out;
@@ -438,7 +474,7 @@ function renderForm() {
     ),
     renderRangeSection(
       "magma", "Molten Cracks", "Fire line",
-      "Heat spreads from first index toward second. Reverse to change flow.",
+      "Heat runs from first index toward second. Whole strip is 0→143 (144 typed in is clamped to the last LED). Delete extra segments to test one crack.",
       "magma", true,
     ),
     renderRangeSection(
@@ -464,7 +500,7 @@ function renderForm() {
       const rows = btn.previousElementSibling;
       const showDir = key === "magma";
       rows.appendChild(makeRangeRow(key, rows.children.length, { start: 0, end: 0 }, showDir));
-      scheduleLivePush();
+      scheduleRangePush();
     });
   });
 }
@@ -584,10 +620,10 @@ function init() {
   els.triggerThresh.addEventListener("change", scheduleThresholdPush);
   els.releaseThresh.addEventListener("input", scheduleThresholdPush);
   els.releaseThresh.addEventListener("change", scheduleThresholdPush);
-  els.totalLeds.addEventListener("input", scheduleLivePush);
-  els.rangeSections.addEventListener("input", scheduleLivePush);
+  els.totalLeds.addEventListener("input", scheduleRangePush);
+  els.rangeSections.addEventListener("input", scheduleRangePush);
   els.rangeSections.addEventListener("click", (e) => {
-    if (e.target.closest(".btn-icon")) scheduleLivePush();
+    if (e.target.closest(".btn-icon")) scheduleRangePush();
   });
 
   els.exportBtn.addEventListener("click", () => {

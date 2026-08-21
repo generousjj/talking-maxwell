@@ -601,6 +601,7 @@ kbd {
 }
 .range-row input[type="number"] {
   width: 100%;
+  min-width: 4.5rem;
   font: inherit;
   font-variant-numeric: tabular-nums;
   padding: 0.4rem 0.5rem;
@@ -650,6 +651,22 @@ kbd {
 .add-range:hover:not(:disabled) {
   color: var(--parchment);
   border-color: var(--parchment-faint);
+}
+.btn-full-strip {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--magma);
+  background: rgba(232, 90, 32, 0.1);
+  border: 1px solid rgba(232, 90, 32, 0.35);
+  padding: 0.45rem 0.65rem;
+  width: 100%;
+  margin-top: 0.35rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.btn-full-strip:hover {
+  border-color: var(--magma);
+  background: rgba(232, 90, 32, 0.18);
 }
 
 /* ---- Log ---- */
