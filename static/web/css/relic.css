@@ -451,11 +451,21 @@ kbd {
   margin-top: 0.6rem;
 }
 .field-row label span {
-  display: block;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
   font-size: 0.72rem;
   color: var(--parchment-dim);
   margin-bottom: 0.2rem;
   letter-spacing: 0.04em;
+}
+.on-stone {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: var(--orb-mid);
+  font-weight: 600;
 }
 .field-row input {
   width: 100%;

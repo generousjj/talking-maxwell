@@ -78,8 +78,14 @@
         <h3>Trigger thresholds</h3>
         <p class="fine-print">Changes push to the stone as soon as it is linked. Also kept in this browser.</p>
         <div class="field-row">
-          <label><span>Awaken above (mT)</span><input type="number" id="triggerThresh" step="0.1" min="0"></label>
-          <label><span>Sleep below (mT)</span><input type="number" id="releaseThresh" step="0.1" min="0"></label>
+          <label>
+            <span>Awaken above (mT) <em id="boardTrig" class="on-stone">stone: —</em></span>
+            <input type="number" id="triggerThresh" step="0.1" min="0.1">
+          </label>
+          <label>
+            <span>Sleep below (mT) <em id="boardRel" class="on-stone">stone: —</em></span>
+            <input type="number" id="releaseThresh" step="0.1" min="0">
+          </label>
           <label>
             <span>Brightness</span>
             <div id="briPills" class="bri-pills" role="group" aria-label="Brightness percent">

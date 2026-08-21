@@ -46,6 +46,8 @@ const els = {
   deltaFill: $("deltaFill"),
   triggerThresh: $("triggerThresh"),
   releaseThresh: $("releaseThresh"),
+  boardTrig: $("boardTrig"),
+  boardRel: $("boardRel"),
   totalLeds: $("totalLeds"),
   rangeSections: $("rangeSections"),
   serialLog: $("serialLog"),
@@ -66,7 +68,9 @@ let reader = null;
 let writer = null;
 let readLoopAbort = null;
 let livePushTimer = null;
+let threshPushTimer = null;
 let lastPushedJson = "";
+let lastDelta = null;
 
 function loadConfig() {
   try {
@@ -135,6 +139,18 @@ const STATE_CLASS = {
   DEACTIVATING: "state-deactivating",
 };
 
+function setOnStone(el, value) {
+  if (!el) return;
+  el.textContent = `stone: ${value} mT`;
+}
+
+function parseCfgLine(line) {
+  const trig = line.match(/trigger=([-\d.]+)/i);
+  const rel = line.match(/release=([-\d.]+)/i);
+  if (trig) setOnStone(els.boardTrig, trig[1]);
+  if (rel) setOnStone(els.boardRel, rel[1]);
+}
+
 function updateDeltaBar(deltaStr) {
   if (!els.deltaFill) return;
   const d = parseFloat(deltaStr);
@@ -156,6 +172,7 @@ function parseMagLine(line) {
   els.magY.textContent = m[2];
   els.magZ.textContent = m[3];
   els.magD.textContent = `${m[4]} mT`;
+  lastDelta = parseFloat(m[4]);
   updateDeltaBar(m[4]);
 
   const state = m[5].toUpperCase();
@@ -165,6 +182,11 @@ function parseMagLine(line) {
   const near = m[6].toUpperCase() === "YES";
   els.magPresent.textContent = near ? "Yes" : "No";
   els.magPresent.className = near ? "sigil-yes" : "sigil-no";
+
+  const trig = line.match(/\btrig=([-\d.]+)/i);
+  const rel = line.match(/\brel=([-\d.]+)/i);
+  if (trig) setOnStone(els.boardTrig, trig[1]);
+  if (rel) setOnStone(els.boardRel, rel[1]);
 }
 
 async function startReadLoop() {
@@ -186,6 +208,7 @@ async function startReadLoop() {
         if (!trimmed) continue;
         log(trimmed);
         if (trimmed.startsWith("[mag]")) parseMagLine(trimmed);
+        if (trimmed.startsWith("[cfg]")) parseCfgLine(trimmed);
       }
     }
   } catch (e) {
@@ -198,11 +221,35 @@ async function startReadLoop() {
   }
 }
 
-async function sendCmd(ch) {
+async function writeSerial(text) {
   if (!writer) throw new Error("Not connected");
-  const enc = new TextEncoder();
-  await writer.write(enc.encode(ch));
+  if (writer.ready) await writer.ready;
+  await writer.write(new TextEncoder().encode(text));
+}
+
+async function sendCmd(ch) {
+  await writeSerial(ch);
   log(`→ sent '${ch}'`);
+}
+
+async function pushThresholds() {
+  syncConfigFromForm();
+  persistConfig();
+  if (lastDelta != null && Number.isFinite(lastDelta)) updateDeltaBar(String(lastDelta));
+  if (!writer) {
+    log("Thresholds saved here — link the stone to apply");
+    return;
+  }
+  await writeSerial(`=T${config.triggerThreshold}\r\n=R${config.releaseThreshold}\r\n`);
+  log(`Thresholds → stone  awaken ${config.triggerThreshold} / sleep ${config.releaseThreshold}`);
+}
+
+function scheduleThresholdPush() {
+  if (lastDelta != null && Number.isFinite(lastDelta)) updateDeltaBar(String(lastDelta));
+  clearTimeout(threshPushTimer);
+  threshPushTimer = setTimeout(() => {
+    pushThresholds().catch((e) => log(e.message, { err: true }));
+  }, 80);
 }
 
 async function pushLiveToBoard({ silent = false, force = false } = {}) {
@@ -227,8 +274,7 @@ async function pushLiveToBoard({ silent = false, force = false } = {}) {
     `=D${rangesPayload(config.crystal2)}`,
     `=H${rangesPayload(config.hidden)}`,
   ];
-  const enc = new TextEncoder();
-  await writer.write(enc.encode(`${lines.join("\n")}\n`));
+  await writeSerial(`${lines.join("\r\n")}\r\n`);
   lastPushedJson = snap;
   if (!silent) {
     log(`Pushed live  B=${config.brightnessPct}%  T=${config.triggerThreshold}  R=${config.releaseThreshold}`);
@@ -534,8 +580,10 @@ function init() {
     });
   });
 
-  els.triggerThresh.addEventListener("input", scheduleLivePush);
-  els.releaseThresh.addEventListener("input", scheduleLivePush);
+  els.triggerThresh.addEventListener("input", scheduleThresholdPush);
+  els.triggerThresh.addEventListener("change", scheduleThresholdPush);
+  els.releaseThresh.addEventListener("input", scheduleThresholdPush);
+  els.releaseThresh.addEventListener("change", scheduleThresholdPush);
   els.totalLeds.addEventListener("input", scheduleLivePush);
   els.rangeSections.addEventListener("input", scheduleLivePush);
   els.rangeSections.addEventListener("click", (e) => {
