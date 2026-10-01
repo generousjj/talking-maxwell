@@ -18,6 +18,7 @@ from .models import (
     BehaviorGains,
     BehaviorOutput,
     ConversationState,
+    GazeContext,
     SpeakingContext,
 )
 
@@ -103,6 +104,7 @@ class BehaviorEngine:
     _tilt_direction: float = 1.0
     _head_lr_out: float = 0.5
     _head_ud_out: float = 0.5
+    _gaze_confidence: float = 0.0
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.gains.seed)
@@ -121,16 +123,19 @@ class BehaviorEngine:
         self._tilt_direction = 1.0
         self._head_lr_out = 0.5
         self._head_ud_out = 0.5
+        self._gaze_confidence = 0.0
 
     def tick(
         self,
         state: ConversationState,
         now: float,
         speaking: Optional[SpeakingContext] = None,
+        gaze: Optional[GazeContext] = None,
     ) -> BehaviorOutput:
         dt = max(0.0, min(0.5, now - self._last_tick)) if self._last_tick else 1 / 30
         self._last_tick = now
         self._update_drift(dt, state)
+        self._apply_gaze(gaze)
 
         if state == ConversationState.SPEAKING:
             raw = self._speaking(now, dt, speaking or SpeakingContext())
@@ -190,6 +195,31 @@ class BehaviorEngine:
         self._yaw_drift += (self._yaw_target - self._yaw_drift) * follow
         self._pitch_drift += (self._pitch_target - self._pitch_drift) * follow
 
+    def _apply_gaze(self, gaze: Optional[GazeContext]) -> None:
+        """Bias the head-drift base toward a detected face.
+
+        Runs right after ``_update_drift`` so it overrides the procedural
+        drift/center-return base with the face target. Every state method builds
+        its head channels as ``drift_base + offsets`` (nods, tilts, idle sines,
+        envelope bob), so re-basing the drift here makes Maxwell *look at the
+        person* while those expressive offsets still layer on top — no separate
+        head-motion code path. Blend weight is the tracker's ``confidence``, which
+        ramps up as a face is held and decays toward 0 when it's lost, so the head
+        eases back to the procedural base on its own.
+        """
+        if gaze is None:
+            self._gaze_confidence = 0.0
+            return
+        c = gaze.confidence
+        if c <= 1e-3:
+            self._gaze_confidence = 0.0
+            return
+        if c > 1.0:
+            c = 1.0
+        self._gaze_confidence = c
+        self._yaw_drift += (gaze.target_lr - self._yaw_drift) * c
+        self._pitch_drift += (gaze.target_ud - self._pitch_drift) * c
+
     def _waiting_wing(self, now: float) -> float:
         """Continuous raised-cosine wing flap.
 
@@ -220,13 +250,21 @@ class BehaviorEngine:
         head_ud downward (matching the convention used by the speaking
         nod path); the tilt term swings head_lr left/right around
         center.
+
+        When a face is being tracked, this aimless wander is what made
+        Maxwell look "drifty" and fought the gaze-driven up/down aim, so
+        we fade it out in proportion to gaze confidence: at a full lock
+        only ``1 - gaze_idle_suppression`` of the wander remains (a little
+        residual life so he isn't a frozen stare), letting the gaze base
+        set a steady look at the person. With no face it's unchanged.
         """
         nod_period = max(0.5, self.gains.idle_nod_period_s)
         tilt_period = max(0.5, self.gains.idle_tilt_period_s)
-        head_ud_offset = -self.gains.idle_nod_strength * math.sin(
+        attn = 1.0 - self._gaze_confidence * _clamp01(self.gains.gaze_idle_suppression)
+        head_ud_offset = -self.gains.idle_nod_strength * attn * math.sin(
             2.0 * math.pi * now / nod_period
         )
-        head_lr_offset = self.gains.idle_tilt_strength * math.sin(
+        head_lr_offset = self.gains.idle_tilt_strength * attn * math.sin(
             2.0 * math.pi * now / tilt_period
         )
         return head_lr_offset, head_ud_offset

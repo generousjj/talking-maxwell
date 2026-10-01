@@ -1,6 +1,6 @@
 """OpenAI Realtime API session for low-latency speech-in / speech-out.
 
-This wraps :class:`openai.AsyncOpenAI`'s ``beta.realtime`` client into a
+This wraps :class:`openai.AsyncOpenAI`'s ``realtime`` (GA) client into a
 small, self-contained session that the webapp / pipeline can start and
 stop on demand. While a session is open, mic audio streams up to OpenAI
 at 24 kHz PCM16, the model's audio response streams back, and we feed
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -103,15 +104,20 @@ def _resample_int16_bytes(data: bytes, src_sr: int, dst_sr: int) -> bytes:
 # value instead of poking at OpenAI SDK internals.
 # ----------------------------------------------------------------------
 
-EVENT_AUDIO_DELTA = "response.audio.delta"
+# NOTE: these are the GA Realtime API event names. The beta API (which
+# used e.g. "response.audio.delta") was retired by OpenAI; the GA models
+# such as ``gpt-realtime`` only speak this shape, where the assistant's
+# audio/transcript events are namespaced under ``response.output_audio*``.
+EVENT_AUDIO_DELTA = "response.output_audio.delta"
 EVENT_RESPONSE_DONE = "response.done"
 EVENT_SPEECH_STARTED = "input_audio_buffer.speech_started"
 EVENT_SPEECH_STOPPED = "input_audio_buffer.speech_stopped"
 EVENT_RESPONSE_CREATED = "response.created"
 EVENT_ERROR = "error"
 EVENT_USER_TRANSCRIPT = "conversation.item.input_audio_transcription.completed"
-EVENT_ASSISTANT_TRANSCRIPT_DELTA = "response.audio_transcript.delta"
-EVENT_ASSISTANT_TRANSCRIPT_DONE = "response.audio_transcript.done"
+EVENT_ASSISTANT_TRANSCRIPT_DELTA = "response.output_audio_transcript.delta"
+EVENT_ASSISTANT_TRANSCRIPT_DONE = "response.output_audio_transcript.done"
+EVENT_FUNCTION_CALL_ARGS_DONE = "response.function_call_arguments.done"
 
 
 def _event_attr(event: object, name: str) -> Any:
@@ -183,6 +189,14 @@ class RealtimeSession:
     envelope_callback: Optional[EnvelopeCallback] = None
     state_callback: Optional[StateCallback] = None
     transcript_callback: Optional[TranscriptCallback] = None
+    tools: Optional[list[dict]] = None
+    """Function-tool schemas (OpenAI Realtime format) to register with the session,
+    e.g. ``look_and_describe`` / ``remember_person`` / ``forget_person``. When
+    provided, the model may call them and ``tool_handler`` services each call."""
+    tool_handler: Optional[Callable[[str, dict], Awaitable[str]]] = None
+    """Async ``(name, arguments) -> result_text`` dispatcher for tool calls. The
+    returned string is fed back as the function output and Maxwell speaks a reaction
+    to it. ``None`` disables tool calling."""
 
     # VAD configuration. Defaults are tuned for a noisy laptop-mic
     # environment (events, fairs, demo tables): server-side far-field
@@ -289,6 +303,20 @@ class RealtimeSession:
     _awaiting_user_transcript: bool = field(default=False, init=False)
     _assistant_flush_task: Optional[asyncio.Task] = field(default=None, init=False)
     _assistant_flush_grace_s: float = 2.5
+    # True while we're servicing a tool call. The function-call response's
+    # ``response.done`` would otherwise flip the state machine to "listening"
+    # before the spoken answer starts; this flag suppresses that so the
+    # follow-up response drives the state.
+    _handling_tool_call: bool = field(default=False, init=False)
+    # Base instructions (personality + tool hints) plus the live "current view"
+    # line (who Maxwell is looking at). ``set_context_line`` re-sends
+    # session.update with base + line so the model can greet people by name.
+    _base_instructions: str = field(default="", init=False)
+    _context_line: str = field(default="", init=False)
+    # Turn state, so a proactive greeting never talks over anyone: True while the
+    # assistant is producing audio, and while the user is mid-utterance.
+    _assistant_speaking: bool = field(default=False, init=False)
+    _user_speaking: bool = field(default=False, init=False)
 
     # Push-to-talk runtime state. ``_ptt_active`` gates the mic pump
     # when ``push_to_talk`` is on. ``_ptt_uploaded_chunks`` tracks
@@ -324,7 +352,10 @@ class RealtimeSession:
         self._client = AsyncOpenAI(api_key=self.api_key)
 
         log.info("realtime: connecting to %s as voice=%s", self.model, self.voice)
-        self._conn_ctx = self._client.beta.realtime.connect(model=self.model)
+        # GA Realtime endpoint. The old ``beta.realtime`` shape was
+        # retired server-side (connections now close with
+        # ``beta_api_shape_disabled``), so we use the GA client.
+        self._conn_ctx = self._client.realtime.connect(model=self.model)
         self._conn = await self._conn_ctx.__aenter__()
 
         # Tell the server how we want it configured: PCM16 in/out at
@@ -349,23 +380,36 @@ class RealtimeSession:
                 "prefix_padding_ms": int(self.vad_prefix_padding_ms),
                 "silence_duration_ms": int(self.vad_silence_duration_ms),
             }
-        session_payload = {
-            "modalities": ["audio", "text"],
-            "voice": self.voice,
-            "instructions": self.instructions,
-            "input_audio_format": "pcm16",
-            "output_audio_format": "pcm16",
+        # GA session shape: audio config is nested under ``audio.input`` /
+        # ``audio.output``, formats are structured objects (not the beta
+        # "pcm16" string), and output selection uses ``output_modalities``.
+        pcm24 = {"type": "audio/pcm", "rate": REALTIME_SAMPLE_RATE}
+        audio_input: dict[str, Any] = {
+            "format": pcm24,
             "turn_detection": turn_detection,
             # Server-side transcription of the user's mic so we can show
             # what they said in the conversation log. Without this,
             # ``conversation.item.input_audio_transcription.completed``
             # events never arrive.
-            "input_audio_transcription": {"model": "whisper-1"},
+            "transcription": {"model": "whisper-1"},
         }
         if self.noise_reduction in ("near_field", "far_field"):
-            session_payload["input_audio_noise_reduction"] = {
-                "type": self.noise_reduction
-            }
+            audio_input["noise_reduction"] = {"type": self.noise_reduction}
+        # Remember the caller-supplied instructions (personality + any tool hints)
+        # as the base; set_context_line layers the live "current view" onto it.
+        self._base_instructions = self.instructions
+        session_payload: dict[str, Any] = {
+            "type": "realtime",
+            "output_modalities": ["audio"],
+            "audio": {
+                "input": audio_input,
+                "output": {"format": pcm24, "voice": self.voice},
+            },
+        }
+        if self.tools:
+            session_payload["tools"] = self.tools
+            session_payload["tool_choice"] = "auto"
+        session_payload["instructions"] = self._compose_instructions()
         if self.push_to_talk:
             log.info(
                 "realtime: turn_detection=disabled (push-to-talk), noise_reduction=%s",
@@ -711,7 +755,10 @@ class RealtimeSession:
             }
         try:
             await self._conn.session.update(
-                session={"turn_detection": turn_detection}
+                session={
+                    "type": "realtime",
+                    "audio": {"input": {"turn_detection": turn_detection}},
+                }
             )
             log.info(
                 "realtime: PTT %s (turn_detection=%s)",
@@ -796,6 +843,119 @@ class RealtimeSession:
                     break
         await self._emit_state("listening")
 
+    def _compose_instructions(self) -> str:
+        """Base instructions plus the live 'current view' line (if any)."""
+        instr = self._base_instructions
+        if self._context_line:
+            instr = (instr + "\n\n" if instr else "") + "Current view: " + self._context_line
+        return instr
+
+    async def set_context_line(self, text: str) -> None:
+        """Update the live 'who am I looking at' context injected into instructions.
+
+        Called when the recognized identity changes (e.g. Maxwell now sees Sarah, or
+        someone new). Re-sends ``session.update`` with the refreshed instructions so
+        the model can greet people by name. Debounced (no-op if unchanged); safe to
+        call mid-session — instructions only affect subsequent responses, so it never
+        interrupts in-flight playback.
+        """
+        text = (text or "").strip()
+        if text == self._context_line:
+            return
+        self._context_line = text
+        if self._conn is None:
+            return
+        try:
+            await self._conn.session.update(
+                session={"type": "realtime", "instructions": self._compose_instructions()}
+            )
+            log.info("realtime: context line -> %s", text or "(cleared)")
+        except Exception:  # noqa: BLE001
+            log.exception("realtime: set_context_line session.update failed")
+
+    @property
+    def is_idle(self) -> bool:
+        """True when it's safe to speak proactively — nobody is mid-turn."""
+        return not (
+            self._assistant_speaking
+            or self._user_speaking
+            or self._handling_tool_call
+            or self._mic_muted
+        )
+
+    async def trigger_greeting(self, instruction: str) -> bool:
+        """Proactively make Maxwell speak (e.g. greet a person who just appeared).
+
+        Issues a ``response.create`` with a one-off instruction so the assistant
+        speaks first without any user input. No-op (returns False) if a turn is in
+        flight, so a greeting never talks over the user or himself. Returns True if a
+        response was actually requested.
+        """
+        if self._conn is None or not self._running:
+            return False
+        if not self.is_idle:
+            log.info("realtime: skipping proactive greeting (turn in flight)")
+            return False
+        try:
+            # Per-response instruction override so this one utterance is the greeting.
+            await self._conn.response.create(response={"instructions": instruction})
+        except TypeError:
+            # Older SDK signature without a response kwarg — fall back to a bare
+            # create (session instructions already carry the current-view line).
+            try:
+                await self._conn.response.create()
+            except Exception:  # noqa: BLE001
+                log.exception("realtime: proactive greeting failed")
+                return False
+        except Exception:  # noqa: BLE001
+            log.exception("realtime: proactive greeting failed")
+            return False
+        log.info("realtime: proactive greeting triggered")
+        return True
+
+    async def _handle_tool_call(self, event: object) -> None:
+        """Service a function tool call from the model.
+
+        Parses the tool name + JSON arguments, dispatches to ``tool_handler``, feeds
+        the returned text back as the function output, and asks the server for a
+        spoken response so Maxwell reacts. Sets ``_handling_tool_call`` up front so
+        the function-call turn's ``response.done`` doesn't prematurely emit
+        "listening" (see the EVENT_RESPONSE_DONE handler).
+        """
+        call_id = _event_attr(event, "call_id")
+        name = _event_attr(event, "name")
+        if self.tool_handler is None or not call_id:
+            return
+        self._handling_tool_call = True
+        raw_args = _event_attr(event, "arguments")
+        args: dict = {}
+        if raw_args:
+            try:
+                args = json.loads(raw_args)
+            except Exception:  # noqa: BLE001 - bad JSON just means empty args
+                log.debug("realtime: could not parse tool arguments %r", raw_args)
+        log.info("realtime: tool call %s(%s) call_id=%s", name, args, call_id)
+        await self._emit_state("thinking")
+        try:
+            result = await self.tool_handler(name, args)
+        except Exception:  # noqa: BLE001 - a tool failure must not kill the session
+            log.exception("realtime: tool handler failed")
+            result = "Sorry, I couldn't do that just now."
+        if self._conn is None:
+            return
+        try:
+            await self._conn.conversation.item.create(
+                item={
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": result or "(no result)",
+                }
+            )
+            await self._conn.response.create()
+        except Exception:  # noqa: BLE001
+            log.exception("realtime: sending function_call_output failed")
+            self._handling_tool_call = False
+
     async def _event_reader_loop(self) -> None:
         """Consume server events and route them to playback / state callbacks.
 
@@ -823,6 +983,7 @@ class RealtimeSession:
                         self._last_audio_t = time.monotonic()
                         if not speaking:
                             speaking = True
+                            self._assistant_speaking = True
                             # Reset barge-in tracking for the new
                             # response (ambient floor will re-learn
                             # this response's playback level).
@@ -857,6 +1018,7 @@ class RealtimeSession:
                         )
                         audio_chunks = 0
                         speaking = False
+                        self._assistant_speaking = False
                         # The server is finished generating, but the
                         # output queue can still have hundreds of ms of
                         # buffered audio. If we flip the state machine
@@ -897,7 +1059,15 @@ class RealtimeSession:
                             )
                         # Reset barge-in flag for the next turn.
                         self._barge_in_active = False
-                    await self._emit_state("listening")
+                    if self._handling_tool_call:
+                        # This response.done belongs to the function-call turn
+                        # (no audio). Don't flip to "listening" — the follow-up
+                        # spoken response will drive thinking -> speaking.
+                        self._handling_tool_call = False
+                    else:
+                        await self._emit_state("listening")
+                elif etype == EVENT_FUNCTION_CALL_ARGS_DONE:
+                    await self._handle_tool_call(event)
                 elif etype == EVENT_SPEECH_STARTED:
                     if self._mic_muted:
                         # We dropped all mic chunks while muted, so the
@@ -908,10 +1078,12 @@ class RealtimeSession:
                         )
                         continue
                     log.info("realtime: user speech started")
+                    self._user_speaking = True
                     await self._emit_state("listening")
                 elif etype == EVENT_SPEECH_STOPPED:
                     if self._mic_muted:
                         continue
+                    self._user_speaking = False
                     log.info("realtime: user speech stopped -> thinking")
                     # The user just finished an utterance; expect
                     # input_audio_transcription.completed for it before

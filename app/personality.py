@@ -2,7 +2,7 @@
 
 Reads the top-level ``personality:`` block out of ``config.yaml`` so
 both web builds (aiohttp ``app/web_app.py`` and FastAPI
-``api/index.py``) ship the same Stanford TEA / admit-weekend
+``api/index.py``) ship the same Stanford TEA / Treefest
 personality the local CLI uses. Falls back to a compact built-in
 prompt if the file is missing or unparseable — this is important
 for Vercel, where config.yaml has to be included via ``includeFiles``
@@ -22,8 +22,10 @@ import yaml
 # stays recognizable even in the degraded case.
 FALLBACK_PERSONALITY = (
     "You are Maxwell, the animatronic parrot mascot of the Stanford "
-    "Themed Entertainment Association (TEA). You will be meeting "
-    "prospective and admitted students at the admit weekend fair. "
+    "Themed Entertainment Association (TEA). You are at Treefest, "
+    "Stanford's club fair, meeting students deciding which clubs to "
+    "join. TEA is a project-based club: members design and build real "
+    "things together, like you. "
     "Be warm, funny, and a genuinely helpful conversationalist — "
     "you can talk about anything, not just the club. Keep replies "
     "to one or two short sentences. Always reply in English, even "

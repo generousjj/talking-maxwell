@@ -2,7 +2,7 @@
 
 Regression guard: previously both the aiohttp server and the Vercel
 FastAPI server shipped a compact placeholder prompt that stripped
-out Stanford TEA specifics (weekly meeting time, admit weekend fair,
+out Stanford TEA specifics (weekly meeting time, Treefest club fair,
 LA trip, alumni placements, etc.). These tests assert config.yaml
 wins at runtime on both builds.
 """
@@ -26,7 +26,8 @@ def _has_full_personality(prompt: str) -> list[str]:
     hitting any of them proves config.yaml is being read.
     """
     needles = [
-        "admit weekend",     # config-yaml-specific audience line
+        "Treefest",          # config-yaml-specific audience line
+        "project-based",     # club framing emphasized at Treefest
         "Wednesday",         # weekly meeting schedule
         "Los Angeles",       # annual trip
         "Imagineer",         # alumni placements

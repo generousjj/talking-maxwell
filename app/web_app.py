@@ -56,7 +56,7 @@ DEFAULT_LLM_MODEL = "gpt-4o-mini"
 # CLI reads) so both web builds and the local operator build share
 # one personality. Without this, the hosted web UI was shipping a
 # compact placeholder that didn't mention Stanford TEA's meeting
-# time, the admit weekend fair, the LA trip, alumni placements, etc.
+# time, the Treefest club fair, the LA trip, alumni placements, etc.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 SYSTEM_PROMPT = load_personality(_REPO_ROOT)
 

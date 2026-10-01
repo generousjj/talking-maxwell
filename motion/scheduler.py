@@ -14,13 +14,14 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from .behavior_engine import BehaviorEngine
-from .models import ConversationState, MotionFrame, SpeakingContext
+from .models import ConversationState, GazeContext, MotionFrame, SpeakingContext
 from .state_machine import ConversationStateMachine
 from transport.base import MotionBackend
 
 log = logging.getLogger(__name__)
 
 SpeakingContextProvider = Callable[[float], Optional[SpeakingContext]]
+GazeProvider = Callable[[float], Optional[GazeContext]]
 
 
 @dataclass
@@ -32,6 +33,7 @@ class MotionScheduler:
     state_machine: ConversationStateMachine
     rate_hz: float = 30.0
     speaking_context_provider: Optional[SpeakingContextProvider] = None
+    gaze_provider: Optional[GazeProvider] = None
 
     _task: Optional[asyncio.Task] = None
     _stopped: bool = False
@@ -67,10 +69,15 @@ class MotionScheduler:
                 ):
                     context = self.speaking_context_provider(now)
 
+                gaze: Optional[GazeContext] = None
+                if self.gaze_provider is not None:
+                    gaze = self.gaze_provider(now)
+
                 output = self.behavior.tick(
                     state=self.state_machine.state,
                     now=now,
                     speaking=context,
+                    gaze=gaze,
                 )
                 frame = output.to_frame(timestamp=now)
                 try:

@@ -205,6 +205,118 @@ class RealtimeConfig:
 
 
 @dataclass
+class VisionConfig:
+    """Webcam vision: face tracking (fast, local, free) + scene understanding
+    (slow, paid, on-demand).
+
+    Face tracking runs a webcam through a face detector at ``tracking_fps`` and
+    turns Maxwell's head toward the nearest face. It's off by default so the app
+    still runs with no camera; enable it here or toggle it live from the operator
+    UI. The ``gaze_*`` knobs shape how face position maps to head motion — the
+    ``invert_*`` flags exist because whether a mirrored webcam / a given servo
+    mounting turns "the right way" can't be known ahead of time (flip them if
+    Maxwell looks *away* from you instead of *at* you). Use
+    ``python tools/vision_preview.py`` to tune these before running the bird.
+
+    Scene understanding is only ever called on demand (operator button or a spoken
+    request), so it has no idle cost. ``scene_min_interval_s`` coalesces rapid
+    re-triggers, and ``scene_max_tokens`` caps the reply length — both cost rails.
+    """
+
+    enabled: bool = False
+    camera_index: int = 0
+    tracking_fps: float = 12.0
+    detector: str = "auto"  # "auto" | "mediapipe" | "opencv"
+    """Face detector backend. ``auto`` prefers MediaPipe when its legacy
+    ``solutions`` API is available (Python <=3.12) and otherwise falls back to
+    OpenCV's bundled Haar cascade — which needs no model download and works on
+    every Python, including 3.13 where the MediaPipe solutions API is gone."""
+
+    # ---- Gaze mapping (face position -> head target) ----
+    gaze_gain_lr: float = 1.4
+    """How far the head swings left/right for a given horizontal face offset."""
+    gaze_gain_ud: float = 1.7
+    """How far the head tilts up/down for a given vertical face offset. Higher
+    than the horizontal gain so Maxwell clearly tips up/down toward the person's
+    face height rather than only swivelling side to side."""
+    invert_lr: bool = False
+    """Flip if Maxwell turns away from the person horizontally."""
+    invert_ud: bool = False
+    """Flip if Maxwell tilts the wrong way vertically."""
+    deadzone: float = 0.03
+    """Face offsets smaller than this (fraction of frame) are treated as centered,
+    so a roughly-centered face doesn't make the head hunt. Kept small so modest
+    up/down head movements still register."""
+    lost_face_timeout_s: float = 1.5
+    """Seconds over which confidence decays after a face leaves frame; the head
+    eases back to procedural motion as it drops."""
+
+    # ---- Face recognition / memory ----
+    recognition_enabled: bool = False
+    """Turn on face recognition (remember people by name). Requires insightface +
+    onnxruntime; if they're missing the app logs a warning and runs without it."""
+    recognition_fps: float = 3.0
+    """How often to run recognition, in Hz. Decoupled from (and much slower than)
+    the 30 fps head tracking — identity doesn't need every frame."""
+    recognition_threshold: float = 0.40
+    """Minimum cosine similarity to accept a match. A calibration starting point,
+    not a constant — tune with tools/recognition_calibrate.py for your camera."""
+    recognition_margin: float = 0.05
+    """Rejection band: if the top two candidates are within this of each other,
+    return 'unknown' rather than risk a confident wrong name."""
+    recognition_votes: int = 8
+    """Frames of agreement (temporal voting) before committing to an identity, so a
+    single bad frame can't make Maxwell blurt the wrong name."""
+    stranger_match_threshold: float = 0.45
+    """Cosine similarity for telling unrecognized people apart within a session:
+    two unknown faces above this are treated as the same stranger (so a person who
+    steps out and back isn't re-greeted), below it as different people (so each new
+    stranger is greeted). Higher = more likely to treat similar faces as distinct."""
+    min_sharpness: float = 60.0
+    """Laplacian-variance floor for enrollment: blurrier face crops (from the moving
+    head) are skipped so they don't pollute a person's stored embeddings."""
+    max_embeddings_per_person: int = 20
+    """Cap on stored embeddings per person (oldest dropped). A spread of views across
+    angles/lighting matters more than any single one."""
+    enroll_sample_interval_s: float = 1.0
+    """While talking to an unrecognized person, sample at most one embedding this
+    often into the pending buffer."""
+    greet_on_sight: bool = True
+    """Make Maxwell speak first when a face is committed — greet remembered people
+    by name, and say hello / ask the name of someone new. Only fires in realtime
+    (voice) mode and never over an in-progress turn."""
+    greeting_cooldown_s: float = 600.0
+    """Don't greet a face again until it's been *unseen* for this long (default 10
+    min). 'Last seen' is refreshed every frame the face is on screen, so someone in
+    an ongoing conversation stays 'seen' and is never re-greeted even when detection
+    flickers in and out. Only a genuine return after a long absence greets again."""
+    insightface_model: str = "buffalo_l"
+    """InsightFace model bundle (SCRFD detector + ArcFace recogniser)."""
+    memory_persist: bool = False
+    """Persist face memory to disk so people are remembered across restarts. Off by
+    default (session-only, nothing biometric written). Enabling this WRITES BIOMETRIC
+    DATA to memory_path (gitignored)."""
+    memory_path: str = "data/face_memory.json"
+    """Where the persisted face memory lives (only used when memory_persist is on)."""
+
+    # ---- Scene understanding (vision LLM) ----
+    scene_enabled: bool = False
+    """Allow paid image analysis ("what do you see?"). Off by default because every
+    describe sends a camera frame to OpenAI. When off, the look_and_describe voice
+    tool isn't offered to the model and the operator button is disabled. Face
+    tracking and face recognition are local and unaffected by this switch."""
+    scene_provider: str = "openai"  # "openai" | "stub"
+    scene_model: str = "gpt-4o-mini"  # vision-capable, cheapest suitable model
+    scene_max_tokens: int = 120
+    scene_min_interval_s: float = 3.0
+    scene_prompt: str = (
+        "You are Maxwell, a witty animatronic parrot, describing what you see "
+        "through your camera. In one short, vivid sentence say what's in front of "
+        "you — objects, people, or what someone is showing you. Stay in character."
+    )
+
+
+@dataclass
 class LoggingConfig:
     level: str = "INFO"
     motion_csv_path: Optional[str] = None
@@ -225,6 +337,7 @@ class AppConfig:
     motion: MotionConfig = field(default_factory=MotionConfig)
     bottango: BottangoConfig = field(default_factory=BottangoConfig)
     realtime: RealtimeConfig = field(default_factory=RealtimeConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 

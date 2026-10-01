@@ -16,6 +16,20 @@ pyserial>=3.5,<4
 # Bottango HTTP transport (legacy / optional)
 aiohttp>=3.9,<4
 
+# Vision (face tracking + scene understanding). Optional at import time —
+# the vision/ modules guard these imports so the app still runs without a
+# camera or these packages installed.
+opencv-python>=4.9,<5
+mediapipe>=0.10,<0.11
+
+# Face recognition / memory (OPTIONAL — only needed if you set
+# vision.recognition_enabled: true). InsightFace's buffalo_l (ArcFace via ONNX
+# Runtime) provides the face embeddings; imports are lazy, so the app runs face
+# tracking + scene understanding without these. Install on demand with:
+#   pip install "insightface>=0.7" "onnxruntime>=1.17"
+# insightface>=0.7
+# onnxruntime>=1.17
+
 # Debugging / inspection (optional)
 matplotlib>=3.8,<4
 

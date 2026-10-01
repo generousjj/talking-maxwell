@@ -248,6 +248,35 @@ INDEX_HTML = """<!doctype html>
 </section>
 
 <section>
+  <h2>Vision (webcam)</h2>
+  <div class="row" style="align-items:center;">
+    <button id="visionToggle">Start face tracking</button>
+    <span id="visionStatus" class="status" style="padding:.25rem .6rem;">off</span>
+    <button id="visionLook" style="margin-left:.5rem;">What do you see?</button>
+  </div>
+  <div class="sub" style="font-size:.85rem;margin-top:.4rem;">
+    Face tracking turns Maxwell's head toward the nearest face (runs locally on
+    the webcam — no API cost). <b>What do you see?</b> sends one frame to a vision
+    model and has Maxwell describe it aloud — this one costs a small API call, so
+    it only fires when you click. Tune the head mapping first with
+    <code>python tools/vision_preview.py</code>; if he looks away from you instead
+    of at you, flip <code>vision.invert_lr</code> / <code>invert_ud</code> in
+    config.yaml.
+  </div>
+  <div id="visionDesc" class="sub" style="font-size:.9rem;margin-top:.4rem;color:#5b3eb5;"></div>
+  <div id="visionRecog" style="margin-top:.6rem;">
+    <div class="sub" style="font-size:.85rem;">
+      Recognizes: <span id="recogName" style="font-weight:600;">—</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:.5rem;margin-top:.3rem;flex-wrap:wrap;">
+      <span class="sub" style="font-size:.8rem;">Known faces:</span>
+      <span id="knownFaces" style="display:flex;gap:.35rem;flex-wrap:wrap;"></span>
+      <button id="forgetAll" style="font-size:.8rem;padding:.2rem .5rem;">Forget everyone</button>
+    </div>
+  </div>
+</section>
+
+<section>
   <h2>Voice &amp; personality</h2>
   <div class="grid" style="grid-template-columns: 160px 1fr;">
     <label for="voice">Voice</label>
@@ -711,6 +740,102 @@ $('rtToggle').onclick = async () => {
 };
 refreshRtStatus();
 setInterval(refreshRtStatus, 3000);
+
+// ---- Vision (webcam face tracking + on-demand scene understanding) ----
+let visionTracking = false;
+function setVisionUi(s) {
+  visionTracking = !!(s && s.tracking);
+  $('visionToggle').textContent = visionTracking ? 'Stop face tracking' : 'Start face tracking';
+  const el = $('visionStatus');
+  if (!visionTracking) {
+    el.textContent = 'off';
+    el.className = 'status';
+  } else if (s && s.seeing_face) {
+    el.textContent = 'tracking a face';
+    el.className = 'status ok';
+  } else {
+    el.textContent = 'on — no face seen';
+    el.className = 'status';
+  }
+}
+function setVisionFeatureUi(s) {
+  // Grey out features switched off in config.yaml (vision.scene_enabled /
+  // vision.recognition_enabled) so the operator can see what's live.
+  const sceneOn = !!(s && s.scene_enabled);
+  $('visionLook').disabled = !sceneOn;
+  $('visionLook').title = sceneOn ? '' : 'Off — set vision.scene_enabled: true in config.yaml';
+  $('visionRecog').style.display = (s && s.recognition_enabled) ? '' : 'none';
+}
+function setRecogUi(recog) {
+  const nameEl = $('recogName');
+  const known = $('knownFaces');
+  if (!recog || !recog.running) {
+    nameEl.textContent = '—';
+    known.innerHTML = '';
+    return;
+  }
+  if (recog.name) nameEl.textContent = recog.name + ' (' + (recog.confidence||0).toFixed(2) + ')';
+  else if (recog.is_unknown) nameEl.textContent = 'someone new';
+  else nameEl.textContent = '—';
+  const people = recog.known || {};
+  const entries = Object.keys(people);
+  known.innerHTML = '';
+  if (!entries.length) {
+    known.innerHTML = '<span class="sub" style="font-size:.8rem;">none yet</span>';
+  } else {
+    entries.forEach(name => {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:.25rem;background:#eef;border-radius:12px;padding:.1rem .5rem;font-size:.8rem;';
+      chip.textContent = name + ' (' + people[name] + ')';
+      const x = document.createElement('button');
+      x.textContent = '×';
+      x.title = 'Forget ' + name;
+      x.style.cssText = 'border:none;background:none;cursor:pointer;color:#a00;font-size:1rem;line-height:1;padding:0;';
+      x.onclick = async () => { await api('/api/vision/forget', {name}); refreshVisionStatus(); };
+      chip.appendChild(x);
+      known.appendChild(chip);
+    });
+  }
+}
+async function refreshVisionStatus() {
+  try {
+    const r = await api('/api/vision/status');
+    if (r.ok) { setVisionUi(r); setVisionFeatureUi(r); setRecogUi(r.recognition); }
+  } catch (e) {}
+}
+$('visionToggle').onclick = async () => {
+  $('visionToggle').disabled = true;
+  try {
+    if (!visionTracking) {
+      $('visionStatus').textContent = 'starting camera...';
+      const r = await api('/api/vision/start', {});
+      if (!r.ok) { $('visionStatus').textContent = 'error: ' + r.error; $('visionStatus').className = 'status err'; }
+      else setVisionUi({tracking: true, seeing_face: false});
+    } else {
+      const r = await api('/api/vision/stop', {});
+      setVisionUi({tracking: false});
+    }
+  } finally {
+    $('visionToggle').disabled = false;
+  }
+};
+$('visionLook').onclick = async () => {
+  $('visionLook').disabled = true;
+  $('visionDesc').textContent = 'looking...';
+  try {
+    const r = await api('/api/vision/describe', {speak: true});
+    $('visionDesc').textContent = r.ok ? ('“' + (r.description || '') + '”') : ('error: ' + r.error);
+  } finally {
+    $('visionLook').disabled = false;
+  }
+};
+$('forgetAll').onclick = async () => {
+  if (!confirm('Forget every remembered face?')) return;
+  await api('/api/vision/forget', {all: true});
+  refreshVisionStatus();
+};
+refreshVisionStatus();
+setInterval(refreshVisionStatus, 2000);
 
 // ---- Connection (top of page) ----
 let connected = null;
@@ -1438,6 +1563,7 @@ class AppState:
             mic_max_s=self.config.audio.max_utterance_s,
             mic_silence_threshold=self.config.audio.vad_threshold,
             mic_silence_hangover_s=self.config.audio.vad_silence_hangover_s,
+            vision_config=self.config.vision,
         )
         await pipeline.__aenter__()
         self.pipeline = pipeline
@@ -1699,6 +1825,84 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
                 {"ok": False, "error": "action must be 'down' or 'up'"}
             )
         return web.json_response({"ok": bool(ok), "action": action})
+
+    async def api_vision_start(_req: web.Request) -> web.Response:
+        """Start webcam face tracking."""
+        try:
+            async with state.lock:
+                await state.ensure_pipeline()
+                started = await state.pipeline.start_face_tracking()
+            return web.json_response({"ok": True, "tracking": True, "started": started})
+        except Exception as e:  # noqa: BLE001
+            log.exception("vision start failed")
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_vision_stop(_req: web.Request) -> web.Response:
+        """Stop webcam face tracking."""
+        try:
+            if state.pipeline is not None:
+                await state.pipeline.stop_face_tracking()
+            return web.json_response({"ok": True, "tracking": False})
+        except Exception as e:  # noqa: BLE001
+            log.exception("vision stop failed")
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_vision_status(_req: web.Request) -> web.Response:
+        if state.pipeline is None:
+            return web.json_response(
+                {"ok": True, "tracking": False, "seeing_face": False}
+            )
+        status = state.pipeline.vision_status()
+        status["ok"] = True
+        return web.json_response(status)
+
+    async def api_vision_describe(req: web.Request) -> web.Response:
+        """On-demand scene understanding: look, describe, and (optionally) speak it.
+
+        Body (all optional): ``{"prompt": "...", "speak": true}``. ``speak``
+        defaults to true — Maxwell says the description aloud through the normal
+        motion pipeline so his beak moves while he talks about what he sees.
+        """
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        prompt = (body.get("prompt") or "").strip() or None
+        speak = body.get("speak", True)
+        vcfg = state.config.vision
+        if not getattr(vcfg, "scene_enabled", False):
+            return web.json_response(
+                {"ok": False, "error": "scene understanding is off (vision.scene_enabled: false)"}
+            )
+        try:
+            async with state.lock:
+                await state.ensure_pipeline()
+                description = await state.pipeline.describe_scene(prompt=prompt)
+                if speak and description:
+                    await state.maybe_prewarm_jaw()
+                    await state.pipeline.say(description)
+            return web.json_response({"ok": True, "description": description})
+        except Exception as e:  # noqa: BLE001
+            log.exception("vision describe failed")
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_vision_forget(req: web.Request) -> web.Response:
+        """Delete a remembered face by name, or everyone with {"all": true}."""
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if state.pipeline is None:
+            return web.json_response({"ok": False, "error": "pipeline not ready"})
+        try:
+            if body.get("all"):
+                result = state.pipeline.forget_face(everyone=True)
+            else:
+                result = state.pipeline.forget_face((body.get("name") or "").strip())
+            return web.json_response(result)
+        except Exception as e:  # noqa: BLE001
+            log.exception("vision forget failed")
+            return web.json_response({"ok": False, "error": str(e)})
 
     async def api_connect(_req: web.Request) -> web.Response:
         """(Re)build the pipeline + open the serial backend."""
@@ -2138,6 +2342,11 @@ def build_app(state: AppState, log_buffer: _LogBuffer) -> web.Application:
     app.router.add_get("/api/realtime/status", api_realtime_status)
     app.router.add_get("/api/realtime/transcripts", api_realtime_transcripts)
     app.router.add_post("/api/realtime/ptt", api_realtime_ptt)
+    app.router.add_post("/api/vision/start", api_vision_start)
+    app.router.add_post("/api/vision/stop", api_vision_stop)
+    app.router.add_get("/api/vision/status", api_vision_status)
+    app.router.add_post("/api/vision/describe", api_vision_describe)
+    app.router.add_post("/api/vision/forget", api_vision_forget)
     app.router.add_post("/api/connect", api_connect)
     app.router.add_post("/api/disconnect", api_disconnect)
     app.router.add_get("/api/connection/status", api_connection_status)

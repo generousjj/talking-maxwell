@@ -190,6 +190,17 @@ const NEW_PROMPT_VALUE = "__new__";
 
 const BUILTIN_EVENTS = [
   {
+    id: "treefest",
+    label: "Treefest Club Fair",
+    context:
+      "You are at Treefest, Stanford's club fair, at the Stanford TEA (Themed "
+      + "Entertainment Association) booth. Students are browsing clubs and "
+      + "deciding what to join. Be inviting: ask what they're into and connect "
+      + "it to TEA. Emphasize that TEA is project-based: members design and build "
+      + "real things together (you, Maxwell, are one of those projects), and "
+      + "anyone can jump onto a project whatever their background.",
+  },
+  {
     id: "admit",
     label: "Admit Weekend Fair",
     context:
@@ -231,7 +242,7 @@ function renderEventSelect() {
   const sel = $("eventSelect");
   if (!sel) return;
   const customs = loadCustomPrompts();
-  const prev = sel.value || localStorage.getItem(EVENT_ID_KEY) || "admit";
+  const prev = sel.value || localStorage.getItem(EVENT_ID_KEY) || "treefest";
   sel.innerHTML = "";
 
   const builtinGroup = document.createElement("optgroup");
@@ -265,7 +276,7 @@ function renderEventSelect() {
   sel.appendChild(newGroup);
 
   const stillThere = Array.from(sel.options).some((o) => o.value === prev);
-  sel.value = stillThere ? prev : "admit";
+  sel.value = stillThere ? prev : "treefest";
 }
 
 // Resolve the context text for whatever is currently selected.
@@ -355,7 +366,7 @@ function wireEventControls() {
     const list = loadCustomPrompts().filter((c) => c.id !== id);
     saveCustomPrompts(list);
     renderEventSelect();
-    $("eventSelect").value = "admit";
+    $("eventSelect").value = "treefest";
     onContextChanged();
   });
 }

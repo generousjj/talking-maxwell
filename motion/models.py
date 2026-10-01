@@ -71,6 +71,37 @@ class SpeakingContext:
 
 
 @dataclass
+class GazeContext:
+    """Where Maxwell should aim his head, as computed by the vision subsystem.
+
+    This is the vision analog of :class:`SpeakingContext`: a small mutable object
+    written by the face-tracking task and read once per motion tick by the
+    behavior engine via a provider callback. ``target_lr`` / ``target_ud`` are
+    normalized head positions in ``[0, 1]`` (0.5 = centered), already mapped from
+    the detected face and ready to drive the head servos directly.
+
+    ``confidence`` in ``[0, 1]`` is how strongly to trust the target — it blends
+    the gaze against Maxwell's default procedural motion, and decays toward 0 when
+    no face has been seen recently so the head eases back to center instead of
+    freezing wherever the last face was. ``last_seen`` is a ``time.monotonic``
+    timestamp of the most recent detection.
+    """
+
+    target_lr: float = 0.5
+    target_ud: float = 0.5
+    confidence: float = 0.0
+    last_seen: float = 0.0
+
+    def active(self, now: float, timeout_s: float) -> bool:
+        """True if a face was seen within ``timeout_s`` and confidence is nonzero."""
+        if self.confidence <= 0.0:
+            return False
+        if self.last_seen <= 0.0:
+            return False
+        return (now - self.last_seen) <= timeout_s
+
+
+@dataclass
 class BehaviorOutput:
     """Raw behavior engine outputs prior to final clamping."""
 
@@ -198,6 +229,15 @@ class BehaviorGains:
     """Period of the head_lr tilt sine (seconds). Coprime-ish with the
     nod and wing periods so the overall idle motion never repeats
     exactly."""
+
+    gaze_idle_suppression: float = 0.85
+    """How much of the idle head wander (the slow head_lr/head_ud sines) is
+    removed when Maxwell is fully locked onto a tracked face, in [0, 1]. At
+    0.85 a confident lock keeps ~15% of the wander — enough residual life that
+    he doesn't look frozen, while still holding a steady, attentive look at the
+    person instead of drifting. The suppression scales with gaze confidence, so
+    it fades in as he acquires a face and fades out as he loses it. 0 disables
+    it (idle wander always at full strength, the pre-vision behavior)."""
 
     head_smoothing_tau_s: float = 0.18
     """Output-side lowpass time constant on head_lr / head_ud, in seconds.

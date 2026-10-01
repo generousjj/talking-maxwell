@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.claude/hooks/check-architecture-doc.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking ARCHITECTURE.md is up to date..."
+          }
+        ]
+      }
+    ]
+  }
+}

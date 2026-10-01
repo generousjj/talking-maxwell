@@ -27,6 +27,7 @@ from motion.envelope import EnvelopeFollower
 from motion.models import (
     BehaviorGains,
     ConversationState,
+    GazeContext,
     JawCalibration,
     SpeakingContext,
 )
@@ -136,27 +137,48 @@ class ConversationPipeline:
     mic_max_s: float = 15.0
     mic_silence_threshold: float = 0.012
     mic_silence_hangover_s: float = 1.2
+    vision_config: Optional[object] = None  # app.config.VisionConfig; kept loose to avoid an import cycle
 
     _speaking_ctx: Optional[LiveSpeakingContext] = None
     _scheduler: Optional[MotionScheduler] = None
     _rt_session: Optional[object] = None
     _rt_lock: Optional[asyncio.Lock] = None
+    _gaze_ctx: Optional[GazeContext] = None
+    _face_tracker: Optional[object] = None
+    _vision_lock: Optional[asyncio.Lock] = None
+    _last_scene_at: float = 0.0
+    _face_memory: Optional[object] = None
+    _recognition: Optional[object] = None
+    _recognition_ctx: Optional[object] = None
 
     async def __aenter__(self) -> "ConversationPipeline":
         behavior = BehaviorEngine(gains=self.behavior_gains)
+        # Shared gaze target: written by the face-tracking task, read once per
+        # motion tick by the behavior engine. Always present (centered / zero
+        # confidence) so the scheduler can read it unconditionally; it only moves
+        # the head once the tracker starts writing detections into it.
+        self._gaze_ctx = GazeContext()
         self._scheduler = MotionScheduler(
             behavior=behavior,
             backend=self.backend,
             state_machine=self.state_machine,
             rate_hz=self.rate_hz,
             speaking_context_provider=self._speaking_snapshot,
+            gaze_provider=self._gaze_snapshot,
         )
         await self._scheduler.start()
         await self.state_machine.idle()
+        cfg = self.vision_config
+        if cfg is not None and getattr(cfg, "enabled", False):
+            try:
+                await self.start_face_tracking()
+            except Exception:  # noqa: BLE001 - vision is optional; never block startup
+                log.exception("vision: face tracking failed to start (continuing)")
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.stop_realtime()
+        await self.stop_face_tracking()
         if self._scheduler is not None:
             await self._scheduler.stop()
 
@@ -164,6 +186,9 @@ class ConversationPipeline:
         if self._speaking_ctx is None:
             return None
         return self._speaking_ctx.snapshot(now)
+
+    def _gaze_snapshot(self, now: float) -> Optional[GazeContext]:
+        return self._gaze_ctx
 
     async def say(self, text: str) -> None:
         """Synthesize `text`, play it, and drive motion while it plays."""
@@ -297,11 +322,18 @@ class ConversationPipeline:
                 else:
                     await self.state_machine.idle()
 
+            tools, tool_hint = self._build_realtime_tools()
+            base_instructions = instructions or self.personality
+            if tool_hint:
+                base_instructions = (
+                    (base_instructions + "\n\n") if base_instructions else ""
+                ) + tool_hint
+
             session = RealtimeSession(
                 api_key=api_key,
                 model=model,
                 voice=voice,
-                instructions=instructions or self.personality,
+                instructions=base_instructions,
                 input_device=input_device,
                 output_device=self.playback_device,
                 envelope_callback=envelope_cb,
@@ -320,9 +352,24 @@ class ConversationPipeline:
                 barge_in_min_frames=barge_in_min_frames,
                 push_to_talk=push_to_talk,
                 transcript_callback=transcript_callback,
+                tools=tools or None,
+                tool_handler=self._handle_realtime_tool if tools else None,
             )
             await session.start()
             self._rt_session = session
+            # If a face is already present when the session opens, seed the identity
+            # line and greet them right away (don't wait for them to speak first).
+            if self._recognition_ctx is not None:
+                line = self._identity_line(self._recognition_ctx)
+                if line:
+                    try:
+                        await session.set_context_line(line)
+                    except Exception:  # noqa: BLE001
+                        log.exception("realtime: initial identity injection failed")
+                try:
+                    await self._maybe_greet(self._recognition_ctx)
+                except Exception:  # noqa: BLE001
+                    log.exception("realtime: initial greeting failed")
 
             # Visible "I'm awake" — flap the wing once so the user has
             # immediate confirmation that realtime mode launched and the
@@ -393,6 +440,415 @@ class ConversationPipeline:
         except Exception:  # noqa: BLE001
             log.exception("realtime: ptt_up failed")
             return False
+
+    # ------------------------------------------------------------
+    # Vision: face tracking (fast, local) + scene understanding (on-demand)
+    # ------------------------------------------------------------
+
+    async def start_face_tracking(self) -> bool:
+        """Start (or no-op if already running) the webcam face-tracking loop.
+
+        Builds the camera + MediaPipe detector from ``vision_config`` and spins up
+        a :class:`vision.face_tracker.FaceTracker` writing into the shared
+        ``_gaze_ctx`` the motion scheduler already reads. Idempotent.
+        """
+        if self._vision_lock is None:
+            self._vision_lock = asyncio.Lock()
+        async with self._vision_lock:
+            if self._face_tracker is not None and getattr(
+                self._face_tracker, "is_running", False
+            ):
+                return False
+            from vision.camera import OpenCVCameraSource
+            from vision.face_detector import build_face_detector
+            from vision.face_tracker import FaceTracker
+
+            cfg = self.vision_config
+            camera = OpenCVCameraSource(index=getattr(cfg, "camera_index", 0))
+            detector = build_face_detector(getattr(cfg, "detector", "auto"))
+            tracker = FaceTracker(
+                camera=camera,
+                detector=detector,
+                gaze=self._gaze_ctx,
+                fps=getattr(cfg, "tracking_fps", 12.0),
+                gain_lr=getattr(cfg, "gaze_gain_lr", 1.4),
+                gain_ud=getattr(cfg, "gaze_gain_ud", 1.2),
+                invert_lr=getattr(cfg, "invert_lr", False),
+                invert_ud=getattr(cfg, "invert_ud", False),
+                deadzone=getattr(cfg, "deadzone", 0.05),
+                lost_face_timeout_s=getattr(cfg, "lost_face_timeout_s", 1.5),
+            )
+            await tracker.start()
+            self._face_tracker = tracker
+            log.info("vision: face tracking started")
+            if getattr(cfg, "recognition_enabled", False):
+                await self._start_recognition(cfg, tracker)
+            return True
+
+    async def _start_recognition(self, cfg, tracker) -> None:
+        """Build + start the face-recognition task alongside tracking.
+
+        Guarded: a missing/broken InsightFace just logs and skips recognition so
+        face tracking + scene understanding keep working.
+        """
+        try:
+            from vision.face_memory import FaceMemory
+            from vision.face_recognizer import build_face_recognizer
+            from vision.recognition import RecognitionContext, RecognitionTracker
+
+            recognizer = build_face_recognizer(getattr(cfg, "insightface_model", "buffalo_l"))
+            persist = (
+                getattr(cfg, "memory_path", None)
+                if getattr(cfg, "memory_persist", False)
+                else None
+            )
+            self._face_memory = FaceMemory(
+                persist_path=persist,
+                max_per_person=getattr(cfg, "max_embeddings_per_person", 20),
+            )
+            self._recognition_ctx = RecognitionContext()
+            recognition = RecognitionTracker(
+                face_tracker=tracker,
+                recognizer=recognizer,
+                memory=self._face_memory,
+                context=self._recognition_ctx,
+                fps=getattr(cfg, "recognition_fps", 3.0),
+                threshold=getattr(cfg, "recognition_threshold", 0.40),
+                margin=getattr(cfg, "recognition_margin", 0.05),
+                votes=getattr(cfg, "recognition_votes", 8),
+                min_sharpness=getattr(cfg, "min_sharpness", 60.0),
+                enroll_sample_interval_s=getattr(cfg, "enroll_sample_interval_s", 1.0),
+                stranger_match_threshold=getattr(cfg, "stranger_match_threshold", 0.45),
+                on_identity_change=self._on_identity_change,
+            )
+            await recognition.start()
+            self._recognition = recognition
+            log.info("vision: face recognition started")
+        except Exception:  # noqa: BLE001 - recognition is optional
+            log.exception("vision: face recognition unavailable (continuing without it)")
+            self._recognition = None
+
+    async def _on_identity_change(self, ctx) -> None:
+        """Push the recognized identity into the live Realtime conversation and,
+        when someone new or remembered appears, make Maxwell greet them first."""
+        session = self._rt_session
+        if session is None or not getattr(session, "is_running", False):
+            return
+        line = self._identity_line(ctx)
+        try:
+            await session.set_context_line(line)
+        except Exception:  # noqa: BLE001
+            log.exception("vision: failed to push identity to realtime session")
+        await self._maybe_greet(ctx)
+
+    async def _maybe_greet(self, ctx) -> None:
+        """Speak first when a face appears — greet by name / welcome a stranger.
+
+        Gated by a per-identity **last-seen cooldown**: if this face was on screen
+        within ``greeting_cooldown_s`` it's the same ongoing encounter (detection
+        just flickered), so we stay quiet rather than re-greeting someone we're
+        already with. Only a genuine return after a long absence — or a first
+        sighting — greets. Also gated by the session being idle so a greeting never
+        talks over an in-progress turn.
+        """
+        cfg = self.vision_config
+        if cfg is None or not getattr(cfg, "greet_on_sight", True):
+            return
+        session = self._rt_session
+        if session is None or not getattr(session, "is_running", False):
+            return
+        key, instruction = self._greeting_for(ctx)
+        if key is None:
+            return
+        cooldown = getattr(cfg, "greeting_cooldown_s", 600.0)
+        rec = self._recognition
+        last_seen = rec.last_seen_at(ctx) if rec is not None else None
+        if last_seen is not None and (time.monotonic() - last_seen) < cooldown:
+            # Seen recently — same encounter, detection just blipped. Don't re-greet.
+            return
+        try:
+            await session.trigger_greeting(instruction)
+        except Exception:  # noqa: BLE001
+            log.exception("vision: greeting trigger failed")
+
+    @staticmethod
+    def _greeting_for(ctx) -> tuple[Optional[str], str]:
+        """(cooldown_key, instruction) for greeting this identity, or (None, '')."""
+        if ctx is None:
+            return None, ""
+        if ctx.name:
+            return ctx.name, (
+                f"{ctx.name} has just come into view. Greet them warmly by name like "
+                "an old friend — one short, cheerful sentence."
+            )
+        if ctx.is_unknown:
+            return "__unknown__", (
+                "Someone new has just appeared in front of you. Warmly say hello, "
+                "introduce yourself as Maxwell, and ask their name — one or two short "
+                "sentences."
+            )
+        return None, ""
+
+    @staticmethod
+    def _identity_line(ctx) -> str:
+        """Natural-language 'who am I looking at' line for the model."""
+        if ctx is None:
+            return ""
+        if ctx.name:
+            return (
+                f"You are looking at {ctx.name}, someone you've met before. "
+                "Greet them warmly by name."
+            )
+        if ctx.is_unknown:
+            return (
+                "You are looking at someone you don't recognize yet. If they tell "
+                "you their name, call remember_person to remember their face."
+            )
+        return ""
+
+    async def stop_face_tracking(self) -> None:
+        """Stop the face-tracking loop (and recognition) if running. Idempotent."""
+        if self._vision_lock is None:
+            self._vision_lock = asyncio.Lock()
+        async with self._vision_lock:
+            if self._recognition is not None:
+                try:
+                    await self._recognition.stop()
+                except Exception:  # noqa: BLE001
+                    log.exception("vision: error stopping recognition")
+                self._recognition = None
+            if self._face_tracker is None:
+                return
+            try:
+                await self._face_tracker.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("vision: error stopping face tracker")
+            self._face_tracker = None
+        if self._gaze_ctx is not None:
+            self._gaze_ctx.confidence = 0.0
+
+    @property
+    def face_tracking_running(self) -> bool:
+        return self._face_tracker is not None and getattr(
+            self._face_tracker, "is_running", False
+        )
+
+    def vision_status(self) -> dict:
+        """Snapshot for the operator UI: tracking state + who Maxwell recognizes."""
+        gaze = self._gaze_ctx
+        seeing_face = bool(gaze is not None and gaze.confidence > 0.05)
+        status = {
+            "tracking": self.face_tracking_running,
+            "seeing_face": seeing_face,
+            "target_lr": round(gaze.target_lr, 3) if gaze else 0.5,
+            "target_ud": round(gaze.target_ud, 3) if gaze else 0.5,
+            "confidence": round(gaze.confidence, 3) if gaze else 0.0,
+        }
+        rc = self._recognition_ctx
+        mem = self._face_memory
+        status["recognition"] = {
+            "running": self._recognition is not None
+            and getattr(self._recognition, "is_running", False),
+            "name": getattr(rc, "name", None) if rc else None,
+            "is_unknown": bool(getattr(rc, "is_unknown", False)) if rc else False,
+            "confidence": round(getattr(rc, "confidence", 0.0), 3) if rc else 0.0,
+            "known": mem.summary() if mem is not None else {},
+        }
+        cfg = self.vision_config
+        # Feature switches, so the operator UI can grey out what's turned off.
+        status["scene_enabled"] = bool(getattr(cfg, "scene_enabled", False)) if cfg else False
+        status["recognition_enabled"] = (
+            bool(getattr(cfg, "recognition_enabled", False)) if cfg else False
+        )
+        return status
+
+    def forget_face(self, name: Optional[str] = None, *, everyone: bool = False) -> dict:
+        """Delete a stored person (or everyone). For the operator UI / voice tool."""
+        mem = self._face_memory
+        if mem is None:
+            return {"ok": False, "error": "recognition not running"}
+        if everyone:
+            n = mem.forget_all()
+            return {"ok": True, "removed": n}
+        if not name:
+            return {"ok": False, "error": "no name given"}
+        removed = mem.forget(name)
+        return {"ok": removed, "removed": 1 if removed else 0, "name": name}
+
+    async def describe_scene(self, prompt: Optional[str] = None) -> str:
+        """Grab the current camera frame and describe it via the vision LLM.
+
+        Reuses the tracker's most recent frame (no second camera reader). If
+        tracking isn't running, grabs a single frame directly. Throttled by
+        ``scene_min_interval_s`` so rapid re-triggers don't stack paid calls — a
+        too-soon call returns a short in-character deferral instead of hitting the
+        API. Speaking the result is the caller's job (e.g. ``pipeline.say``).
+        """
+        cfg = self.vision_config
+        if cfg is None or not getattr(cfg, "scene_enabled", False):
+            # Paid image analysis is switched off — never touch the API.
+            return "My eyes are just for following faces today, so I can't describe things."
+        min_interval = getattr(cfg, "scene_min_interval_s", 3.0) if cfg else 3.0
+        now = time.monotonic()
+        if self._last_scene_at and (now - self._last_scene_at) < min_interval:
+            return "Give me a second — I'm still looking!"
+
+        frame = None
+        if self._face_tracker is not None:
+            frame = self._face_tracker.latest_frame()
+        if frame is None:
+            frame = await self._grab_single_frame()
+        if frame is None:
+            return "I can't see anything right now — my camera's not on."
+
+        self._last_scene_at = now
+        from vision.scene import build_vision_provider
+
+        provider = build_vision_provider(
+            getattr(cfg, "scene_provider", "openai") if cfg else "openai",
+            model=getattr(cfg, "scene_model", "gpt-4o-mini") if cfg else "gpt-4o-mini",
+            max_output_tokens=getattr(cfg, "scene_max_tokens", 120) if cfg else 120,
+        )
+        scene_prompt = prompt or (
+            getattr(cfg, "scene_prompt", "") if cfg else ""
+        ) or "Describe what you see in one short sentence."
+        return await provider.describe(frame, prompt=scene_prompt)
+
+    def _build_realtime_tools(self) -> tuple[list[dict], str]:
+        """Assemble the Realtime tool schemas + an instruction hint for them.
+
+        ``look_and_describe`` (paid image analysis) is offered only when
+        ``scene_enabled`` is on; the ``remember_person`` / ``forget_person``
+        face-memory tools only when ``recognition_enabled`` is on. With both off the
+        session gets no tools at all. Returns ``(schemas, hint_text)``.
+        """
+        if self.vision_config is None:
+            return [], ""
+        tools: list[dict] = []
+        hint = ""
+        if getattr(self.vision_config, "scene_enabled", False):
+            tools.append(
+                {
+                    "type": "function",
+                    "name": "look_and_describe",
+                    "description": (
+                        "Look through your camera and describe what you currently see. "
+                        "Call this whenever the user asks what you see, asks you to look "
+                        "at something, or shows you an object."
+                    ),
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                }
+            )
+            hint = (
+                "You have a camera and can see. When someone asks what you see, asks "
+                "you to look, or shows you something, call look_and_describe and react "
+                "to what it returns."
+            )
+        if getattr(self.vision_config, "recognition_enabled", False):
+            tools.extend(
+                [
+                    {
+                        "type": "function",
+                        "name": "remember_person",
+                        "description": (
+                            "Remember the face of the person you're currently looking "
+                            "at under a name. Call this when someone you don't "
+                            "recognize tells you their name so you can greet them next "
+                            "time."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "The person's name.",
+                                }
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                    {
+                        "type": "function",
+                        "name": "forget_person",
+                        "description": (
+                            "Forget a person you've remembered. Call this if someone "
+                            "asks you to forget them."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "The name of the person to forget.",
+                                }
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                ]
+            )
+            hint += (
+                " You can remember faces. The 'Current view' note tells you who you're "
+                "looking at. If it's someone you've met, greet them by name. If it's "
+                "someone new and they tell you their name, call remember_person to "
+                "remember them. If someone asks to be forgotten, call forget_person."
+            )
+        return tools, hint.strip()
+
+    async def _handle_realtime_tool(self, name: str, args: dict) -> str:
+        """Dispatch a Realtime tool call to the right vision/memory action."""
+        if name == "look_and_describe":
+            try:
+                return await self.describe_scene()
+            except Exception:  # noqa: BLE001
+                log.exception("realtime look failed")
+                return "I tried to look but couldn't see anything just now."
+        if name == "remember_person":
+            person = (args or {}).get("name", "").strip()
+            if not person:
+                return "I didn't catch the name — what should I call you?"
+            if self._recognition is None:
+                return "My face memory isn't running right now."
+            count = self._recognition.flush_pending(person)
+            if count > 0:
+                return f"Great, I'll remember you, {person}!"
+            return (
+                f"I'd love to remember you, {person}, but I can't see your face "
+                "clearly yet — can you look at me for a moment?"
+            )
+        if name == "forget_person":
+            person = (args or {}).get("name", "").strip()
+            result = self.forget_face(person)
+            if result.get("ok"):
+                return f"Okay, I've forgotten {person}."
+            return f"I don't think I had {person} remembered."
+        log.warning("realtime: unknown tool %s", name)
+        return "I'm not sure how to do that."
+
+    async def _grab_single_frame(self):
+        """Open the camera, grab one frame, close it — used when tracking is off."""
+        from vision.camera import OpenCVCameraSource
+
+        cfg = self.vision_config
+        camera = OpenCVCameraSource(index=getattr(cfg, "camera_index", 0) if cfg else 0)
+        loop = asyncio.get_event_loop()
+
+        def _grab():
+            camera.open()
+            try:
+                # Discard a couple of warm-up frames; the first read is often black.
+                frame = None
+                for _ in range(4):
+                    frame = camera.read()
+                return frame
+            finally:
+                camera.close()
+
+        try:
+            return await loop.run_in_executor(None, _grab)
+        except Exception:  # noqa: BLE001
+            log.exception("vision: single-frame grab failed")
+            return None
 
     async def handle_live_turn(self) -> tuple[str, str]:
         await self.state_machine.listening()

@@ -72,7 +72,7 @@ DEFAULT_LLM_MODEL = "gpt-4o-mini"
 
 
 # Pulled from config.yaml (same file the local CLI reads). Makes the
-# Vercel build use the full Stanford TEA + admit-weekend-fair
+# Vercel build use the full Stanford TEA + Treefest club-fair
 # personality instead of the compact placeholder we used to ship —
 # so Maxwell actually knows about the club, the meeting time, the
 # annual LA trip, alumni, etc. Falls back to a built-in short prompt

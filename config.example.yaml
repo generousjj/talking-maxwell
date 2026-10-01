@@ -7,14 +7,14 @@ backend: mock        # mock | bottango
 
 personality: |
   You are Maxwell, the animatronic parrot mascot of the Stanford Themed
-  Entertainment Association (TEA). You will be meeting prospective and
-  admitted students at the admit weekend fair. Be warm, funny, and a
-  genuinely helpful conversationalist — you can talk about anything,
-  not just the club. Give real, thoughtful answers; do not dumb things
-  down or pretend to be a literal-minded bird. Keep replies to one or
-  two short sentences so the conversation flows. Always reply in
-  English, even if the user speaks to you in another language — if
-  they do, gently respond in English anyway.
+  Entertainment Association (TEA). Right now you are at Treefest, Stanford's
+  club fair, at the TEA booth meeting students who are browsing clubs and
+  deciding what to join this year. Be warm, funny, and a genuinely helpful
+  conversationalist — you can talk about anything, not just the club. Give
+  real, thoughtful answers; do not dumb things down or pretend to be a
+  literal-minded bird. Keep replies to one or two short sentences so the
+  conversation flows. Always reply in English, even if the user speaks to
+  you in another language — if they do, gently respond in English anyway.
 
   Do NOT say the written word "squawk", "polly", or any onomatopoeia in
   your replies — text-to-speech reads those literally as English words
@@ -22,11 +22,25 @@ personality: |
   and a playful tone instead. No emojis. Do not announce that you are
   an AI.
 
+  At Treefest your job is to make people want to join TEA. Be inviting:
+  ask what they're into, connect it to something TEA does, and encourage
+  them to sign up or come to a meeting. Don't be pushy, and don't turn
+  every reply into a pitch.
+
+  The most important thing to get across: Stanford TEA is a PROJECT-BASED
+  club. Members actually design and build real things together — you
+  yourself are one of those projects, an animatronic built by club
+  members. Emphasize hands-on making, and that anyone can jump onto a
+  project no matter their experience: engineering, art, writing, music,
+  design, and storytelling skills are all useful.
+
   About Stanford TEA (bring it up naturally when it's relevant, don't
   force it into every reply):
   - Club for students passionate about themed entertainment: theme
     parks, immersive experiences, location-based entertainment,
     storytelling through space and design.
+  - Project-based: members work in teams to design and build real
+    themed-entertainment projects, like Maxwell the animatronic parrot.
   - Weekly meetings Wednesdays 7:30 to 8:30 PM during the academic year.
   - Activities: online design competitions, industry expos, an annual
     trip to Los Angeles theme parks (Universal Studios, Disneyland),
@@ -102,6 +116,10 @@ motion:
     idle_jitter: 0.03
     listening_jitter: 0.05
     thinking_tilt: 0.12
+    # When face tracking has a confident lock, fade out this fraction of the
+    # idle head wander so Maxwell holds a steady look at the person instead of
+    # drifting. 0.85 keeps ~15% residual life; 0 disables (always-full wander).
+    gaze_idle_suppression: 0.85
     seed: null                      # set an int for fully deterministic motion
 
 bottango:
@@ -210,6 +228,66 @@ realtime:
   # streams while the user holds a key/button. Toggleable live from
   # the UI, applied without dropping the websocket.
   push_to_talk: false
+
+# Webcam vision. Two independent features:
+#   * face tracking  — a fast local loop that turns Maxwell's head toward the
+#     nearest face (free, no API calls).
+#   * scene understanding — an on-demand call to a vision LLM so Maxwell can
+#     describe what he's shown (paid, only fires when triggered).
+# Off by default so the app runs with no camera. Toggle live from the operator
+# UI, or set enabled: true here. Tune the gaze mapping with
+# `python tools/vision_preview.py` before running the bird.
+vision:
+  enabled: false
+  camera_index: 0
+  tracking_fps: 12.0
+  detector: auto                # auto | mediapipe | opencv (auto falls back to
+                                # opencv Haar when mediapipe.solutions is missing,
+                                # e.g. on Python 3.13)
+  # Face-position -> head-target mapping. Flip an invert flag if Maxwell looks
+  # AWAY from the person instead of toward them on that axis.
+  gaze_gain_lr: 1.4
+  gaze_gain_ud: 1.7             # vertical swing; higher so he clearly looks up/down
+  invert_lr: false
+  invert_ud: false
+  deadzone: 0.03                # centered-face deadband (fraction of frame)
+  lost_face_timeout_s: 1.5      # head eases back to center this long after a face leaves
+  # Face recognition / memory (remember people by name). Needs insightface +
+  # onnxruntime; the app runs without them, just with recognition off.
+  recognition_enabled: false
+  recognition_fps: 3.0          # runs much slower than the 30fps head tracking
+  recognition_threshold: 0.40   # min cosine similarity to accept a match (calibrate!)
+  recognition_margin: 0.05      # reject if top-2 candidates are this close (avoids wrong names)
+  recognition_votes: 8          # frames of agreement before committing an identity
+  stranger_match_threshold: 0.45  # tell distinct unknown people apart within a session
+  min_sharpness: 60.0           # Laplacian-variance floor; skip blurry crops when enrolling
+  max_embeddings_per_person: 20
+  enroll_sample_interval_s: 1.0
+  insightface_model: buffalo_l
+  # Proactive greetings: Maxwell speaks first when he sees a face (greets known
+  # people by name, says hello + asks the name of someone new). Realtime voice
+  # mode only; never interrupts an in-progress turn.
+  greet_on_sight: true
+  # Don't greet a face again until it's been UNSEEN this long (default 10 min).
+  # Last-seen refreshes every frame the face is on screen, so someone you're
+  # already talking to is never re-greeted even when detection flickers.
+  greeting_cooldown_s: 600.0
+  # Persistence: OFF = session-only (forgotten on restart, nothing biometric on
+  # disk). ON writes embeddings to memory_path (gitignored) so people are
+  # remembered across restarts.
+  memory_persist: false
+  memory_path: data/face_memory.json
+  # Scene understanding (on-demand only). PAID: each "what do you see?" sends a
+  # camera frame to OpenAI. Off by default; turn on to enable the look tool + button.
+  scene_enabled: false
+  scene_provider: openai        # openai | stub
+  scene_model: gpt-4o-mini      # vision-capable, cheapest suitable model
+  scene_max_tokens: 120
+  scene_min_interval_s: 3.0     # coalesce rapid re-triggers (cost rail)
+  scene_prompt: |
+    You are Maxwell, a witty animatronic parrot, describing what you see through
+    your camera. In one short, vivid sentence say what's in front of you —
+    objects, people, or what someone is showing you. Stay in character.
 
 logging:
   level: INFO
