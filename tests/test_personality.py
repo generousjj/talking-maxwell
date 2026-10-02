@@ -28,7 +28,7 @@ def _has_full_personality(prompt: str) -> list[str]:
     needles = [
         "Treefest",          # config-yaml-specific audience line
         "project-based",     # club framing emphasized at Treefest
-        "Wednesday",         # weekly meeting schedule
+        "Sunday",            # weekly meeting schedule (tentative this year)
         "Los Angeles",       # annual trip
         "Imagineer",         # alumni placements
     ]
