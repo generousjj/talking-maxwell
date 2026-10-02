@@ -45,7 +45,7 @@ you're in is the single most important thing for reading the rest of this doc:
 | Where hardware I/O happens | **In the Python process** on the laptop, over USB-serial | **In the visitor's browser**, via the Web Serial API |
 | Where the OpenAI Realtime session runs | **In the Python process**, over a WebSocket | **In the browser**, over WebRTC, using a short-lived token the server mints |
 | `OPENAI_API_KEY` location | Loaded into the Python process's environment | Stays on the server only; browser never sees it |
-| Vision (face tracking/recognition/scene) | Supported (Python + OpenCV/MediaPipe/InsightFace) | **Face tracking only** — client-side via the native `FaceDetector` (`js/vision.js`); recognition + scene not ported |
+| Vision (face tracking/recognition/scene) | Supported (Python + OpenCV/MediaPipe/InsightFace) | **Face tracking only** — client-side (`js/vision.js`): MediaPipe Tasks-Vision from CDN (native `FaceDetector` fallback); recognition + scene not ported |
 | Deployable to Vercel/Fly/Docker? | No — needs a real USB port | Yes |
 | Who uses it | Whoever is standing at the booth with the laptop | Anyone with the URL; hardware still needs to be plugged into *some* laptop running the page |
 
@@ -823,11 +823,14 @@ step.
 disk but not yet committed to git. This section describes the full Python
 subsystem, which runs in local operator mode only. The hosted browser build
 (`index.html`) now also has **client-side face tracking** — a from-scratch
-port, not this Python code: `static/web/js/vision.js` uses the browser's
-native `FaceDetector` to maintain a gaze context that `js/behavior.js`'s
+port, not this Python code: `static/web/js/vision.js` loads MediaPipe
+Tasks-Vision's `FaceDetector` from the jsDelivr CDN (model from Google's
+model store), falling back to the browser-native `FaceDetector` only if the
+CDN is unreachable. It maintains a gaze context that `js/behavior.js`'s
 `_apply_gaze` blends into the head channels, mirroring `_apply_gaze` here.
-Only face tracking is ported; recognition and scene understanding remain
-Python/local-only.)*
+Works in stock Chrome/Edge with no flags; the app sets no CSP, so the
+cross-origin module + wasm + model load without config. Only face tracking
+is ported; recognition and scene understanding remain Python/local-only.)*
 
 Three independent features, each with its own switch in `config.yaml`'s
 `vision:` block (restart the app after changing them):

@@ -108,6 +108,11 @@ function setVisionState(s) {
     label.textContent = "Starting camera…";
     return;
   }
+  if (s.state === "loading") {
+    dot.classList.add("warn");
+    label.textContent = "Loading face detector…";
+    return;
+  }
   dot.classList.add(s.seeingFace ? "ok" : "warn");
   label.textContent = s.seeingFace ? "Tracking a face" : "Looking for a face…";
   $("visionStartBtn").disabled = true;
@@ -124,8 +129,8 @@ scheduler.setGazeProvider(() => faceTracker.snapshot());
 if (!faceDetectionSupported()) {
   $("visionStartBtn").disabled = true;
   $("visionHint").textContent =
-    "Face tracking needs the native FaceDetector (Chrome/Edge — you may need to enable "
-    + "chrome://flags/#enable-experimental-web-platform-features). Not available in this browser.";
+    "Face tracking needs a secure (https) page with camera access. This browser/context "
+    + "doesn't support it.";
 }
 
 $("visionStartBtn").addEventListener("click", async () => {

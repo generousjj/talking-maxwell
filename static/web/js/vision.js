@@ -1,18 +1,92 @@
 // Browser-side face tracking. Client-only port of vision/face_tracker.py:
-// grab webcam frames, detect the nearest face with the native Shape
-// Detection API (`window.FaceDetector`), and maintain a shared gaze
-// context ({target_lr, target_ud, confidence}) that the motion
+// grab webcam frames, detect the nearest face, and maintain a shared
+// gaze context ({target_lr, target_ud, confidence}) that the motion
 // scheduler feeds into BehaviorEngine._apply_gaze each tick — exactly
 // where app/pipeline.py feeds the Python GazeContext. No server/Vercel
 // changes: getUserMedia + detection + the existing Web Serial motion
 // path all run in the booth browser.
 //
-// Deliberately uses only the native FaceDetector (no CDN/WASM deps).
-// That's Chrome/Edge-only and can be gated behind
-// chrome://flags/#enable-experimental-web-platform-features on some
-// builds; `isSupported()` lets the UI fail soft with a clear message.
+// Detection engine, in priority order (both run in STOCK Chrome with no
+// flags, so this works on any officer's machine with zero setup):
+//   1. MediaPipe Tasks-Vision FaceDetector, loaded on demand from the
+//      jsDelivr CDN (model from Google's model store). The app sets no
+//      CSP, so the cross-origin module + wasm + model just load.
+//   2. The native `window.FaceDetector` (Shape Detection API) as a
+//      fast-path fallback *if* it happens to be enabled — but we never
+//      depend on it, because it's flag-gated on most Chrome builds.
+// If the CDN is unreachable AND native isn't available, start() throws
+// and the UI shows a clear message.
+
+// Pinned MediaPipe build so a CDN "latest" bump can't change behavior
+// mid-event. wasm + model are fetched from the same version/CDN.
+const MP_VERSION = "0.10.18";
+const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
+const MP_MODEL =
+  "https://storage.googleapis.com/mediapipe-models/face_detector/" +
+  "blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
 
 function clamp01(x) { if (x < 0) return 0; if (x > 1) return 1; return x; }
+
+// Load MediaPipe's FaceDetector from the CDN and wrap it behind a tiny
+// uniform interface: detect(video) -> [{x,y,w,h} in pixels], close().
+async function createMediapipeDetector() {
+  const vision = await import(/* @vite-ignore */ `${MP_BASE}/vision_bundle.mjs`);
+  const { FaceDetector, FilesetResolver } = vision;
+  const fileset = await FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
+  const detector = await FaceDetector.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MP_MODEL },
+    runningMode: "VIDEO",
+    minDetectionConfidence: 0.5,
+  });
+  return {
+    engine: "mediapipe",
+    detect(video) {
+      // detectForVideo wants a monotonically increasing timestamp (ms).
+      const res = detector.detectForVideo(video, performance.now());
+      return (res.detections || []).map((d) => {
+        const b = d.boundingBox; // {originX, originY, width, height} in px
+        return { x: b.originX, y: b.originY, w: b.width, h: b.height };
+      });
+    },
+    close() { try { detector.close(); } catch (_) {} },
+  };
+}
+
+// Fast-path: the native Shape Detection API, only if it's actually
+// present (flag-dependent on most builds — never relied upon).
+function createNativeDetector() {
+  const fd = new window.FaceDetector({ maxDetectedFaces: 5, fastMode: true });
+  return {
+    engine: "native",
+    async detect(video) {
+      const raw = await fd.detect(video);
+      return raw.map((d) => {
+        const b = d.boundingBox;
+        return { x: b.x, y: b.y, w: b.width, h: b.height };
+      });
+    },
+    close() {},
+  };
+}
+
+// Build the best available detector. MediaPipe first (works everywhere),
+// native only as a fallback if the CDN load fails.
+async function createDetector(log = () => {}) {
+  try {
+    const d = await createMediapipeDetector();
+    log("vision: using MediaPipe face detector");
+    return d;
+  } catch (e) {
+    log(`vision: MediaPipe load failed (${e.message || e})`);
+  }
+  if (typeof window !== "undefined" && "FaceDetector" in window) {
+    log("vision: falling back to native FaceDetector");
+    return createNativeDetector();
+  }
+  throw new Error(
+    "Could not load a face detector (CDN unreachable and no native FaceDetector)."
+  );
+}
 
 // Port of vision.face_tracker.map_face_to_gaze. A face centered in frame
 // yields (0.5, 0.5); offsets scale by gain and flip per axis via invert.
@@ -48,8 +122,15 @@ function selectPrimary(faces, prevCenter, hysteresis = 0.25) {
   return nearest;
 }
 
+// Support = a secure context with a camera API. The detector itself
+// (MediaPipe from CDN) loads at start(); we don't gate on it here since
+// it works in any modern Chrome/Edge without flags.
 export function faceDetectionSupported() {
-  return typeof window !== "undefined" && "FaceDetector" in window;
+  return (
+    typeof navigator !== "undefined" &&
+    !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) &&
+    (typeof window === "undefined" || window.isSecureContext !== false)
+  );
 }
 
 export class BrowserFaceTracker {
@@ -110,8 +191,7 @@ export class BrowserFaceTracker {
     if (this._running) return;
     if (!faceDetectionSupported()) {
       throw new Error(
-        "This browser has no native FaceDetector. Use Chrome/Edge (you may need " +
-        "chrome://flags/#enable-experimental-web-platform-features)."
+        "Camera access needs a secure (https) page and a browser with getUserMedia."
       );
     }
     this.onStatus({ state: "starting" });
@@ -125,12 +205,22 @@ export class BrowserFaceTracker {
       this.video.playsInline = true;
       try { await this.video.play(); } catch (_) {}
     }
-    // fastMode trades a little accuracy for the frame rate we want.
-    this._detector = new window.FaceDetector({ maxDetectedFaces: 5, fastMode: true });
+    // Load the detector (MediaPipe from CDN, native fallback). First load
+    // fetches the wasm + model (~a second), so surface a loading state.
+    this.onStatus({ state: "loading" });
+    try {
+      this._detector = await createDetector(this.log);
+    } catch (e) {
+      // Release the camera we just grabbed if the detector won't load.
+      if (this._stream) { for (const t of this._stream.getTracks()) { try { t.stop(); } catch (_) {} } this._stream = null; }
+      if (this.video) { try { this.video.srcObject = null; } catch (_) {} }
+      this.onStatus({ state: "off" });
+      throw e;
+    }
     this._running = true;
     this._prevCenter = null;
     this.gaze = { target_lr: 0.5, target_ud: 0.5, confidence: 0 };
-    this.log(`vision: face tracking started (~${this.fps} Hz)`);
+    this.log(`vision: face tracking started (~${this.fps} Hz, ${this._detector.engine})`);
     this.onStatus({ state: "on", seeingFace: false });
     this._loop();
   }
@@ -143,7 +233,7 @@ export class BrowserFaceTracker {
       this._stream = null;
     }
     if (this.video) { try { this.video.srcObject = null; } catch (_) {} }
-    this._detector = null;
+    if (this._detector) { try { this._detector.close(); } catch (_) {} this._detector = null; }
     // Drop confidence so the head eases back to procedural motion.
     this.gaze.confidence = 0;
     this._prevCenter = null;
@@ -175,11 +265,11 @@ export class BrowserFaceTracker {
     const vh = v && v.videoHeight;
     let primary = null;
     if (this._detector && vw && vh) {
+      // Unified detector output: [{x,y,w,h} in source pixels].
       const raw = await this._detector.detect(v);
-      const faces = raw.map((d) => {
-        const b = d.boundingBox;
-        const area = (b.width * b.height) / (vw * vh);
-        return { cx: (b.x + b.width / 2) / vw, cy: (b.y + b.height / 2) / vh, area };
+      const faces = raw.map((b) => {
+        const area = (b.w * b.h) / (vw * vh);
+        return { cx: (b.x + b.w / 2) / vw, cy: (b.y + b.h / 2) / vh, area };
       });
       primary = selectPrimary(faces, this._prevCenter, 0.25);
       if (primary) this._prevCenter = [primary.cx, primary.cy];
