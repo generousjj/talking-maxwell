@@ -147,6 +147,17 @@ const faceTracker = new BrowserFaceTracker({
 });
 scheduler.setGazeProvider(() => faceTracker.snapshot());
 
+// "Mirror L/R" flips only the *displayed* preview (selfie view), not the
+// gaze calibration — how the guest sees themselves is independent of which
+// way Maxwell's head physically turns. Video + box overlay share the same
+// transform so the boxes stay aligned either way.
+function applyMirror() {
+  const t = $("visionFlipLr").checked ? "scaleX(-1)" : "none";
+  const v = $("visionPreview"); if (v) v.style.transform = t;
+  const c = $("visionOverlay"); if (c) c.style.transform = t;
+}
+applyMirror();
+
 if (!faceDetectionSupported()) {
   $("visionStartBtn").disabled = true;
   $("visionStatus").textContent = "Face tracking needs a secure (https) page with a camera.";
@@ -155,7 +166,6 @@ if (!faceDetectionSupported()) {
 $("visionStartBtn").addEventListener("click", async () => {
   $("visionStartBtn").disabled = true;
   try {
-    faceTracker.setInvert({ lr: $("visionFlipLr").checked });
     await faceTracker.start();
   } catch (e) {
     setVisionStatus({ state: "off" });
@@ -163,7 +173,7 @@ $("visionStartBtn").addEventListener("click", async () => {
   }
 });
 $("visionStopBtn").addEventListener("click", () => faceTracker.stop());
-$("visionFlipLr").addEventListener("change", (e) => faceTracker.setInvert({ lr: e.target.checked }));
+$("visionFlipLr").addEventListener("change", applyMirror);
 window.addEventListener("beforeunload", () => { try { faceTracker.stop(); } catch (_) {} });
 
 // ---- audio device pickers ----
