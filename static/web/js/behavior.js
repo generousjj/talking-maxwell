@@ -59,6 +59,9 @@ export const DEFAULT_GAINS = {
   idleNodPeriodS:      3.7,
   idleTiltPeriodS:     5.1,
   headSmoothingTauS:   0.08,
+  // How strongly a locked-on face suppresses idle head wander, scaled by
+  // gaze confidence. Mirrors motion.models BehaviorGains.gaze_idle_suppression.
+  gazeIdleSuppression: 0.85,
   seed:                null,
 
   // Legacy alias names still accepted for backward-compat with older
@@ -98,6 +101,7 @@ export class BehaviorEngine {
     this._tilt_direction = 1;
     this._head_lr_out = 0.5;
     this._head_ud_out = 0.5;
+    this._gaze_confidence = 0;
   }
 
   reset() {
@@ -110,6 +114,7 @@ export class BehaviorEngine {
     this._nod_strength = 0;
     this._tilt_direction = 1;
     this._head_lr_out = this._head_ud_out = 0.5;
+    this._gaze_confidence = 0;
   }
 
   setState(s) {
@@ -140,13 +145,17 @@ export class BehaviorEngine {
   // Main tick. Signature matches Python: tick(speakingContext) with
   // the engine holding `state` internally (vs. Python passing state
   // in; functionally equivalent). Returns {jaw, head_lr, head_ud, wing}.
-  tick(speakingContext = null) {
+  tick(speakingContext = null, gaze = null) {
     const now = this._now();
     const dt = this._last_tick
       ? Math.max(0, Math.min(0.5, now - this._last_tick))
       : 1 / 30;
     this._last_tick = now;
     this._update_drift(dt, this.state);
+    // Re-base the drift toward a detected face right after the procedural
+    // drift update, so every state's `drift_base + offsets` composition
+    // makes Maxwell look at the person while expressive offsets layer on.
+    this._apply_gaze(gaze);
 
     let raw;
     if (this.state === STATE.SPEAKING) {
@@ -206,6 +215,19 @@ export class BehaviorEngine {
     this._pitch_drift += (this._pitch_target - this._pitch_drift) * follow;
   }
 
+  // ---- gaze (mirrors Python BehaviorEngine._apply_gaze) ----
+  // Blend the drift base toward the gaze target by the tracker's
+  // confidence. gaze = {target_lr, target_ud, confidence} or null.
+  _apply_gaze(gaze) {
+    if (!gaze) { this._gaze_confidence = 0; return; }
+    let c = gaze.confidence;
+    if (!(c > 1e-3)) { this._gaze_confidence = 0; return; }
+    if (c > 1) c = 1;
+    this._gaze_confidence = c;
+    this._yaw_drift   += (gaze.target_lr - this._yaw_drift)   * c;
+    this._pitch_drift += (gaze.target_ud - this._pitch_drift) * c;
+  }
+
   // ---- waiting wing (idle/listening/thinking flap) ----
   _waiting_wing(now) {
     const period = Math.max(0.2, this.gains.waitingWingPeriodS);
@@ -218,8 +240,11 @@ export class BehaviorEngine {
   _idle_head_offsets(now) {
     const nodPeriod  = Math.max(0.5, this.gains.idleNodPeriodS);
     const tiltPeriod = Math.max(0.5, this.gains.idleTiltPeriodS);
-    const head_ud_off = -this.gains.idleNodStrength  * Math.sin(TAU * now / nodPeriod);
-    const head_lr_off =  this.gains.idleTiltStrength * Math.sin(TAU * now / tiltPeriod);
+    // Fade idle wander out as gaze locks on, so Maxwell holds a steady
+    // look at the person instead of fighting the aim with drifty sines.
+    const attn = 1 - this._gaze_confidence * clamp01(this.gains.gazeIdleSuppression || 0);
+    const head_ud_off = -this.gains.idleNodStrength  * attn * Math.sin(TAU * now / nodPeriod);
+    const head_lr_off =  this.gains.idleTiltStrength * attn * Math.sin(TAU * now / tiltPeriod);
     return [head_lr_off, head_ud_off];
   }
 

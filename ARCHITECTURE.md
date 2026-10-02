@@ -45,7 +45,7 @@ you're in is the single most important thing for reading the rest of this doc:
 | Where hardware I/O happens | **In the Python process** on the laptop, over USB-serial | **In the visitor's browser**, via the Web Serial API |
 | Where the OpenAI Realtime session runs | **In the Python process**, over a WebSocket | **In the browser**, over WebRTC, using a short-lived token the server mints |
 | `OPENAI_API_KEY` location | Loaded into the Python process's environment | Stays on the server only; browser never sees it |
-| Vision (face tracking/recognition/scene) | Supported (Python + OpenCV/MediaPipe/InsightFace) | **Not implemented** — no camera code in the browser build |
+| Vision (face tracking/recognition/scene) | Supported (Python + OpenCV/MediaPipe/InsightFace) | **Face tracking only** — client-side via the native `FaceDetector` (`js/vision.js`); recognition + scene not ported |
 | Deployable to Vercel/Fly/Docker? | No — needs a real USB port | Yes |
 | Who uses it | Whoever is standing at the booth with the laptop | Anyone with the URL; hardware still needs to be plugged into *some* laptop running the page |
 
@@ -820,8 +820,14 @@ step.
 ## 9. Maxwell's vision
 
 *(See the snapshot note at the top — this subsystem is present and wired up on
-disk but not yet committed to git. Local operator mode only; the browser build
-has no camera code at all.)*
+disk but not yet committed to git. This section describes the full Python
+subsystem, which runs in local operator mode only. The hosted browser build
+(`index.html`) now also has **client-side face tracking** — a from-scratch
+port, not this Python code: `static/web/js/vision.js` uses the browser's
+native `FaceDetector` to maintain a gaze context that `js/behavior.js`'s
+`_apply_gaze` blends into the head channels, mirroring `_apply_gaze` here.
+Only face tracking is ported; recognition and scene understanding remain
+Python/local-only.)*
 
 Three independent features, each with its own switch in `config.yaml`'s
 `vision:` block (restart the app after changing them):
@@ -962,8 +968,10 @@ with its own inline `<style>`/`<script>`. Two pages:
 
 ### 10.2 Hosted browser mode — pages, routes, auth
 
-Static pages served from `static/web/`: `login.html`, `index.html` (operator),
-`admits.html` (guest), `sing.html` (jukebox), plus `relic.html` at `/relic` — an
+Static pages served from `static/web/`: `login.html`, `index.html` (operator —
+includes a client-side **Vision** panel for `FaceDetector`-based face tracking,
+see §9's snapshot note), `admits.html` (guest), `sing.html` (jukebox), plus
+`relic.html` at `/relic` — an
 unrelated Web Serial lighting/magnet control panel for the "Relic" artifact prop
 (`js/relic.js`, `css/relic.css`). `app/web_app.py` (aiohttp) and
 `api/index.py` (FastAPI/Vercel) implement **identical** routes and share the

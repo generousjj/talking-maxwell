@@ -8,6 +8,7 @@ import { WebSerialTransport, MockTransport } from "./serial.js";
 import { EnvelopeFollower, DEFAULT_JAW_CALIBRATION } from "./envelope.js";
 import { BehaviorEngine, DEFAULT_GAINS } from "./behavior.js";
 import { MotionScheduler } from "./motion.js";
+import { BrowserFaceTracker, faceDetectionSupported } from "./vision.js";
 import { RealtimeSession } from "./realtime.js";
 import { TypedSession } from "./typed.js";
 import { LiveSpeakingContext } from "./live_speaking_context.js";
@@ -86,6 +87,62 @@ const scheduler = new MotionScheduler({
   },
 });
 scheduler.start();
+
+// ---- vision (client-side face tracking) ----
+// Mirrors the Python booth app: a face tracker updates a shared gaze
+// context that the scheduler feeds into the behavior engine every tick,
+// so the head follows the nearest face. Fully client-side — the webcam
+// stream and detection never leave the browser.
+function setVisionState(s) {
+  const dot = $("visionDot");
+  const label = $("visionLabel");
+  dot.classList.remove("ok", "warn", "err");
+  if (!s || s.state === "off") {
+    label.textContent = "Off";
+    $("visionStartBtn").disabled = !faceDetectionSupported();
+    $("visionStopBtn").disabled = true;
+    return;
+  }
+  if (s.state === "starting") {
+    dot.classList.add("warn");
+    label.textContent = "Starting camera…";
+    return;
+  }
+  dot.classList.add(s.seeingFace ? "ok" : "warn");
+  label.textContent = s.seeingFace ? "Tracking a face" : "Looking for a face…";
+  $("visionStartBtn").disabled = true;
+  $("visionStopBtn").disabled = false;
+}
+
+const faceTracker = new BrowserFaceTracker({
+  video: $("visionPreview"),
+  log,
+  onStatus: setVisionState,
+});
+scheduler.setGazeProvider(() => faceTracker.snapshot());
+
+if (!faceDetectionSupported()) {
+  $("visionStartBtn").disabled = true;
+  $("visionHint").textContent =
+    "Face tracking needs the native FaceDetector (Chrome/Edge — you may need to enable "
+    + "chrome://flags/#enable-experimental-web-platform-features). Not available in this browser.";
+}
+
+$("visionStartBtn").addEventListener("click", async () => {
+  $("visionStartBtn").disabled = true;
+  try {
+    faceTracker.setInvert({ lr: $("visionFlipLr").checked, ud: $("visionFlipUd").checked });
+    await faceTracker.start();
+  } catch (e) {
+    log(`vision start failed: ${e.message || e}`);
+    setVisionState({ state: "off" });
+  }
+});
+$("visionStopBtn").addEventListener("click", async () => {
+  await faceTracker.stop();
+});
+$("visionFlipLr").addEventListener("change", (e) => faceTracker.setInvert({ lr: e.target.checked }));
+$("visionFlipUd").addEventListener("change", (e) => faceTracker.setInvert({ ud: e.target.checked }));
 
 // ---- UI state ----
 let rt = null;
@@ -451,6 +508,7 @@ $("typedInput").addEventListener("keydown", (ev) => { if (ev.key === "Enter") se
 $("logoutBtn").addEventListener("click", () => logout());
 window.addEventListener("beforeunload", async () => {
   try { if (rt) await rt.stop(); } catch (_) {}
+  try { if (faceTracker) await faceTracker.stop(); } catch (_) {}
   try { if (transport) await transport.disconnect(); } catch (_) {}
 });
 

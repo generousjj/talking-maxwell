@@ -133,6 +133,27 @@
       </div>
     </section>
 
+    <section class="panel">
+      <h2>Vision <span class="muted">· face tracking</span></h2>
+      <div class="row gap wrap">
+        <button id="visionStartBtn">Start face tracking</button>
+        <button id="visionStopBtn" class="ghost" disabled>Stop</button>
+        <label class="inline" title="Flip if Maxwell turns away from the person instead of toward them.">
+          <input type="checkbox" id="visionFlipLr" checked> Flip L/R
+        </label>
+        <label class="inline" title="Flip if Maxwell looks up when the person is low (or vice versa).">
+          <input type="checkbox" id="visionFlipUd"> Flip U/D
+        </label>
+      </div>
+      <video id="visionPreview" playsinline muted
+             style="width:200px;max-width:100%;border-radius:8px;margin-top:.6rem;background:#1b1430;transform:scaleX(-1);"></video>
+      <div class="status-row">
+        <span class="dot" id="visionDot"></span>
+        <span id="visionLabel">Off</span>
+      </div>
+      <p class="hint" id="visionHint">Head follows the nearest face. Runs fully in this browser — no camera data leaves the booth. Needs the Chrome/Edge native face detector.</p>
+    </section>
+
     <section class="panel conversation">
       <h2>Conversation</h2>
       <div id="convo" class="convo"></div>

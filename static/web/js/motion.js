@@ -7,12 +7,16 @@ export class MotionScheduler {
   // that returns a SpeakingContext snapshot, which is passed through
   // to BehaviorEngine.tick. Leave null to drive the engine without
   // any speaking-mode context (IDLE-ish motion only).
-  constructor({ hz = 30, behavior, transport, onFrame = () => {}, speakingContextProvider = null } = {}) {
+  constructor({ hz = 30, behavior, transport, onFrame = () => {}, speakingContextProvider = null, gazeProvider = null } = {}) {
     this.period = 1000 / hz;
     this.behavior = behavior;
     this.transport = transport;
     this.onFrame = onFrame;
     this.speakingContextProvider = speakingContextProvider;
+    // Called every tick (all states) to return a gaze snapshot
+    // {target_lr, target_ud, confidence}, mirroring how app/pipeline.py
+    // passes a GazeContext into BehaviorEngine.tick on every frame.
+    this.gazeProvider = gazeProvider;
     this._timer = null;
     this._running = false;
     // Background-tab guard: when the tab is hidden, browsers throttle
@@ -32,6 +36,7 @@ export class MotionScheduler {
 
   setTransport(t) { this.transport = t; }
   setSpeakingContextProvider(fn) { this.speakingContextProvider = fn; }
+  setGazeProvider(fn) { this.gazeProvider = fn; }
 
   start() {
     if (this._running) return;
@@ -49,7 +54,11 @@ export class MotionScheduler {
       if (this.behavior && this.behavior.state === "speaking" && this.speakingContextProvider) {
         try { ctx = this.speakingContextProvider(); } catch (_) { ctx = null; }
       }
-      const frame = this.behavior.tick(ctx);
+      let gaze = null;
+      if (this.gazeProvider) {
+        try { gaze = this.gazeProvider(); } catch (_) { gaze = null; }
+      }
+      const frame = this.behavior.tick(ctx, gaze);
       try { this.onFrame(frame); } catch (_) {}
       if (this.transport && this.transport.isConnected()) {
         try { await this.transport.sendFrame(frame); } catch (_) {}
