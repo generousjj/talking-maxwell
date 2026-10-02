@@ -140,6 +140,9 @@ export class BrowserFaceTracker {
     video,
     log = () => {},
     onStatus = () => {},
+    // Called each detect tick with the raw detected face boxes so a UI
+    // can draw an overlay: { boxes:[{x,y,w,h} px], vw, vh, primaryBox }.
+    onFaces = () => {},
     fps = 12,
     gainLr = 1.4,
     gainUd = 1.2,
@@ -153,6 +156,7 @@ export class BrowserFaceTracker {
     this.video = video;
     this.log = log;
     this.onStatus = onStatus;
+    this.onFaces = onFaces;
     this.fps = fps;
     this.gainLr = gainLr;
     this.gainUd = gainUd;
@@ -237,6 +241,7 @@ export class BrowserFaceTracker {
     // Drop confidence so the head eases back to procedural motion.
     this.gaze.confidence = 0;
     this._prevCenter = null;
+    try { this.onFaces({ boxes: [], vw: 0, vh: 0, primaryBox: null }); } catch (_) {}
     this.log("vision: face tracking stopped");
     this.onStatus({ state: "off" });
   }
@@ -264,16 +269,21 @@ export class BrowserFaceTracker {
     const vw = v && v.videoWidth;
     const vh = v && v.videoHeight;
     let primary = null;
+    let rawBoxes = [];
     if (this._detector && vw && vh) {
       // Unified detector output: [{x,y,w,h} in source pixels].
-      const raw = await this._detector.detect(v);
-      const faces = raw.map((b) => {
+      rawBoxes = await this._detector.detect(v);
+      const faces = rawBoxes.map((b) => {
         const area = (b.w * b.h) / (vw * vh);
-        return { cx: (b.x + b.w / 2) / vw, cy: (b.y + b.h / 2) / vh, area };
+        return { cx: (b.x + b.w / 2) / vw, cy: (b.y + b.h / 2) / vh, area, box: b };
       });
       primary = selectPrimary(faces, this._prevCenter, 0.25);
       if (primary) this._prevCenter = [primary.cx, primary.cy];
     }
+    // Hand the raw boxes to the UI for overlay drawing (empty = clear).
+    try {
+      this.onFaces({ boxes: rawBoxes, vw: vw || 0, vh: vh || 0, primaryBox: primary ? primary.box : null });
+    } catch (_) {}
 
     if (primary) {
       const { lr, ud } = mapFaceToGaze(primary, {

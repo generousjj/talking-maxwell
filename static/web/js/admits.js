@@ -17,6 +17,7 @@ import { WebSerialTransport } from "./serial.js";
 import { EnvelopeFollower, DEFAULT_JAW_CALIBRATION } from "./envelope.js";
 import { BehaviorEngine, DEFAULT_GAINS } from "./behavior.js";
 import { MotionScheduler } from "./motion.js";
+import { BrowserFaceTracker, faceDetectionSupported } from "./vision.js";
 import { RealtimeSession } from "./realtime.js";
 import { LiveSpeakingContext } from "./live_speaking_context.js";
 import {
@@ -95,6 +96,75 @@ const scheduler = new MotionScheduler({
   onFrame: () => {},
 });
 scheduler.start();
+
+// ---- vision (client-side face tracking + live face box) ----
+// Same gaze pipeline as the operator page; additionally draws a box
+// around each detected face on a canvas overlaid on the preview.
+function drawFaceBoxes(data) {
+  const canvas = $("visionOverlay");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  if (!data || !data.vw || !data.vh) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
+  if (canvas.width !== data.vw || canvas.height !== data.vh) {
+    canvas.width = data.vw; canvas.height = data.vh;
+  }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const b of data.boxes) {
+    const p = data.primaryBox;
+    const isPrimary = p && b.x === p.x && b.y === p.y && b.w === p.w && b.h === p.h;
+    ctx.lineWidth = isPrimary ? 5 : 3;
+    ctx.strokeStyle = isPrimary ? "#8b5cf6" : "rgba(139,92,246,.45)";
+    const r = Math.min(16, b.w / 4, b.h / 4);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(b.x, b.y, b.w, b.h, r);
+    else ctx.rect(b.x, b.y, b.w, b.h);
+    ctx.stroke();
+  }
+}
+
+function setVisionStatus(s) {
+  const el = $("visionStatus");
+  if (!el) return;
+  if (!s || s.state === "off") {
+    el.textContent = "Off";
+    $("visionStartBtn").disabled = !faceDetectionSupported();
+    $("visionStopBtn").disabled = true;
+    return;
+  }
+  if (s.state === "starting") { el.textContent = "Starting camera…"; return; }
+  if (s.state === "loading") { el.textContent = "Loading face detector…"; return; }
+  el.textContent = s.seeingFace ? "Maxwell sees you! 👀" : "Looking for a face…";
+  $("visionStartBtn").disabled = true;
+  $("visionStopBtn").disabled = false;
+}
+
+const faceTracker = new BrowserFaceTracker({
+  video: $("visionPreview"),
+  log: silentLog,
+  onStatus: setVisionStatus,
+  onFaces: drawFaceBoxes,
+});
+scheduler.setGazeProvider(() => faceTracker.snapshot());
+
+if (!faceDetectionSupported()) {
+  $("visionStartBtn").disabled = true;
+  $("visionStatus").textContent = "Face tracking needs a secure (https) page with a camera.";
+}
+
+$("visionStartBtn").addEventListener("click", async () => {
+  $("visionStartBtn").disabled = true;
+  try {
+    faceTracker.setInvert({ lr: $("visionFlipLr").checked });
+    await faceTracker.start();
+  } catch (e) {
+    setVisionStatus({ state: "off" });
+    $("visionStatus").textContent = "Couldn't start the camera. " + (e.message || e);
+  }
+});
+$("visionStopBtn").addEventListener("click", () => faceTracker.stop());
+$("visionFlipLr").addEventListener("change", (e) => faceTracker.setInvert({ lr: e.target.checked }));
+window.addEventListener("beforeunload", () => { try { faceTracker.stop(); } catch (_) {} });
 
 // ---- audio device pickers ----
 

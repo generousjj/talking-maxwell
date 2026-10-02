@@ -328,6 +328,28 @@
   </div>
 </section>
 
+<section class="card" id="visionCard">
+  <h2>Maxwell can see you!</h2>
+  <p class="hint" style="margin:0 0 .75rem;">
+    Let Maxwell follow your face. Runs entirely in this browser — nothing is
+    recorded or uploaded.
+  </p>
+  <div class="row">
+    <button class="mini-btn" id="visionStartBtn" type="button">Start face tracking</button>
+    <button class="mini-btn ghost" id="visionStopBtn" type="button" disabled>Stop</button>
+    <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.85rem;font-weight:600;color:var(--maxwell-brown);">
+      <input type="checkbox" id="visionFlipLr" checked> Mirror L/R
+    </label>
+  </div>
+  <div id="visionStage" style="position:relative;width:280px;max-width:100%;margin:.85rem auto 0;">
+    <video id="visionPreview" playsinline muted
+           style="width:100%;display:block;border-radius:18px;background:#1b1430;transform:scaleX(-1);"></video>
+    <canvas id="visionOverlay"
+            style="position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none;"></canvas>
+  </div>
+  <div id="visionStatus" style="text-align:center;font-weight:700;font-size:.95rem;margin-top:.5rem;color:var(--maxwell-purple-2);">Off</div>
+</section>
+
 <section class="card">
   <h2>Motion tuning</h2>
   <p class="hint" style="margin:0 0 .75rem;">

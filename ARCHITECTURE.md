@@ -971,12 +971,13 @@ with its own inline `<style>`/`<script>`. Two pages:
 
 ### 10.2 Hosted browser mode — pages, routes, auth
 
-Static pages served from `static/web/`: `login.html`, `index.html` (operator —
-includes a client-side **Vision** panel for `FaceDetector`-based face tracking,
-see §9's snapshot note), `admits.html` (guest), `sing.html` (jukebox), plus
-`relic.html` at `/relic` — an
+Static pages served from `static/web/`: `login.html`, `index.html` (operator),
+`admits.html` (guest), `sing.html` (jukebox), plus `relic.html` at `/relic` — an
 unrelated Web Serial lighting/magnet control panel for the "Relic" artifact prop
-(`js/relic.js`, `css/relic.css`). `app/web_app.py` (aiohttp) and
+(`js/relic.js`, `css/relic.css`). Both `index.html` and `admits.html` include a
+client-side **Vision** panel (`js/vision.js`) for face tracking — see §9's
+snapshot note; the guest page additionally draws a live box around each detected
+face on a canvas overlay. `app/web_app.py` (aiohttp) and
 `api/index.py` (FastAPI/Vercel) implement **identical** routes and share the
 exact same auth primitives from `app/auth_core.py` — the intent being that
 password hashing, session signing, and rate limiting are byte-for-byte the same
