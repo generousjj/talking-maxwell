@@ -147,34 +147,73 @@ const faceTracker = new BrowserFaceTracker({
 });
 scheduler.setGazeProvider(() => faceTracker.snapshot());
 
-// "Mirror L/R" flips only the *displayed* preview (selfie view), not the
-// gaze calibration — how the guest sees themselves is independent of which
-// way Maxwell's head physically turns. Video + box overlay share the same
-// transform so the boxes stay aligned either way.
+// Vision prefs persist per booth laptop so a refresh or shift change keeps
+// the same calibration (and re-arms face tracking automatically).
+const VISION_PREFS_KEY = "maxwell:admits:vision";
+function loadVisionPrefs() {
+  try { return JSON.parse(localStorage.getItem(VISION_PREFS_KEY) || "{}"); } catch (_) { return {}; }
+}
+function saveVisionPrefs(patch) {
+  try { localStorage.setItem(VISION_PREFS_KEY, JSON.stringify({ ...loadVisionPrefs(), ...patch })); } catch (_) {}
+}
+
+// "Mirror view" flips only the *displayed* preview (selfie view). "Flip
+// head ↔/↕" flip the gaze calibration — which way Maxwell's head actually
+// turns — and are independent of the mirror. Video + box overlay share the
+// mirror transform so the boxes stay aligned either way.
 function applyMirror() {
-  const t = $("visionFlipLr").checked ? "scaleX(-1)" : "none";
+  const t = $("visionMirror").checked ? "scaleX(-1)" : "none";
   const v = $("visionPreview"); if (v) v.style.transform = t;
   const c = $("visionOverlay"); if (c) c.style.transform = t;
 }
+function applyGazeInvert() {
+  faceTracker.setInvert({ lr: $("visionFlipLr").checked, ud: $("visionFlipUd").checked });
+}
+
+// Restore saved prefs (defaults match config.yaml: mirror on, gaze L/R
+// inverted, U/D not) before first apply.
+const _vp = loadVisionPrefs();
+if (typeof _vp.mirror === "boolean") $("visionMirror").checked = _vp.mirror;
+if (typeof _vp.flipLr === "boolean") $("visionFlipLr").checked = _vp.flipLr;
+if (typeof _vp.flipUd === "boolean") $("visionFlipUd").checked = _vp.flipUd;
 applyMirror();
+applyGazeInvert();
 
 if (!faceDetectionSupported()) {
   $("visionStartBtn").disabled = true;
   $("visionStatus").textContent = "Face tracking needs a secure (https) page with a camera.";
 }
 
-$("visionStartBtn").addEventListener("click", async () => {
+async function startVision() {
   $("visionStartBtn").disabled = true;
   try {
     await faceTracker.start();
+    saveVisionPrefs({ on: true });
   } catch (e) {
     setVisionStatus({ state: "off" });
     $("visionStatus").textContent = "Couldn't start the camera. " + (e.message || e);
   }
-});
-$("visionStopBtn").addEventListener("click", () => faceTracker.stop());
-$("visionFlipLr").addEventListener("change", applyMirror);
+}
+$("visionStartBtn").addEventListener("click", startVision);
+$("visionStopBtn").addEventListener("click", () => { faceTracker.stop(); saveVisionPrefs({ on: false }); });
+$("visionMirror").addEventListener("change", () => { applyMirror(); saveVisionPrefs({ mirror: $("visionMirror").checked }); });
+$("visionFlipLr").addEventListener("change", () => { applyGazeInvert(); saveVisionPrefs({ flipLr: $("visionFlipLr").checked }); });
+$("visionFlipUd").addEventListener("change", () => { applyGazeInvert(); saveVisionPrefs({ flipUd: $("visionFlipUd").checked }); });
 window.addEventListener("beforeunload", () => { try { faceTracker.stop(); } catch (_) {} });
+
+// Auto-resume face tracking after a refresh / shift change when it was on
+// last time AND the camera is already allowed for this origin — so the
+// officer doesn't have to re-click every reload. If permission isn't
+// granted yet we wait for a Start click rather than surprise-prompting.
+(async () => {
+  if (!faceDetectionSupported() || !loadVisionPrefs().on) return;
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      const st = await navigator.permissions.query({ name: "camera" });
+      if (st.state === "granted") startVision();
+    }
+  } catch (_) { /* permissions API unavailable; leave it to the Start button */ }
+})();
 
 // ---- audio device pickers ----
 

@@ -976,8 +976,11 @@ Static pages served from `static/web/`: `login.html`, `index.html` (operator),
 unrelated Web Serial lighting/magnet control panel for the "Relic" artifact prop
 (`js/relic.js`, `css/relic.css`). Both `index.html` and `admits.html` include a
 client-side **Vision** panel (`js/vision.js`) for face tracking — see §9's
-snapshot note; the guest page additionally draws a live box around each detected
-face on a canvas overlay. `app/web_app.py` (aiohttp) and
+snapshot note. The guest page is intended as the **primary booth page**: it
+additionally draws a live box around each detected face, and its vision
+controls (mirror-view + gaze flip ↔/↕) persist per-laptop in `localStorage`
+and auto-resume tracking on reload when the camera is already permitted.
+`app/web_app.py` (aiohttp) and
 `api/index.py` (FastAPI/Vercel) implement **identical** routes and share the
 exact same auth primitives from `app/auth_core.py` — the intent being that
 password hashing, session signing, and rate limiting are byte-for-byte the same

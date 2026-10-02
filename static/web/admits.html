@@ -337,8 +337,19 @@
   <div class="row">
     <button class="mini-btn" id="visionStartBtn" type="button">Start face tracking</button>
     <button class="mini-btn ghost" id="visionStopBtn" type="button" disabled>Stop</button>
-    <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.85rem;font-weight:600;color:var(--maxwell-brown);">
-      <input type="checkbox" id="visionFlipLr" checked> Mirror L/R
+  </div>
+  <div class="row" style="margin-top:.5rem;gap:1rem;">
+    <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.85rem;font-weight:600;color:var(--maxwell-brown);"
+           title="Show yourself as a mirror (selfie view). Doesn't change how Maxwell moves.">
+      <input type="checkbox" id="visionMirror" checked> Mirror view
+    </label>
+    <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.85rem;font-weight:600;color:var(--maxwell-brown);"
+           title="Flip if Maxwell turns away from you instead of toward you.">
+      <input type="checkbox" id="visionFlipLr" checked> Flip head ↔
+    </label>
+    <label style="display:inline-flex;align-items:center;gap:.35rem;font-size:.85rem;font-weight:600;color:var(--maxwell-brown);"
+           title="Flip if Maxwell looks up when you move down (or vice versa).">
+      <input type="checkbox" id="visionFlipUd"> Flip head ↕
     </label>
   </div>
   <div id="visionStage" style="position:relative;width:280px;max-width:100%;margin:.85rem auto 0;">
